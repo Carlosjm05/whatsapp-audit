@@ -36,6 +36,7 @@ function createWhatsAppClient() {
         puppeteer: {
             headless: true,
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+            protocolTimeout: 600000,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -91,11 +92,42 @@ function createWhatsAppClient() {
     return client;
 }
 
+// ─── OBTENER CHATS CON REINTENTOS ───────────────────────────
+// WhatsApp Web necesita tiempo para sincronizar después de `ready`;
+// getChats() puede fallar con "Execution context was destroyed" o
+// "Runtime.callFunctionOn timed out" si se llama demasiado pronto.
+async function getChatsWithRetry(client, { attempts = 5, initialDelayMs = 5000 } = {}) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            logger.info(`Obteniendo chats (intento ${attempt}/${attempts})...`);
+            const chats = await client.getChats();
+            logger.info(`✅ getChats() exitoso: ${chats.length} chats`);
+            return chats;
+        } catch (error) {
+            lastError = error;
+            logger.warn(`⚠️  getChats() falló (intento ${attempt}/${attempts}): ${error.message}`);
+            if (attempt < attempts) {
+                const backoff = initialDelayMs * Math.pow(2, attempt - 1);
+                logger.info(`   Reintentando en ${Math.round(backoff / 1000)}s...`);
+                await sleep(backoff);
+            }
+        }
+    }
+    throw new Error(`getChats() falló tras ${attempts} intentos: ${lastError?.message}`);
+}
+
+// Espera a que WhatsApp Web termine de sincronizar tras el evento `ready`.
+async function waitForSync(client, syncMs = 30000) {
+    logger.info(`Esperando ${Math.round(syncMs / 1000)}s para que WhatsApp Web termine de sincronizar...`);
+    await sleep(syncMs);
+}
+
 // ─── MODO: TEST DE CONEXIÓN ─────────────────────────────────
 async function runTestMode(client) {
     logger.info('🔍 MODO TEST — Verificando conexión...');
-    
-    const chats = await client.getChats();
+
+    const chats = await getChatsWithRetry(client);
     const contacts = await client.getContacts();
     
     const individualChats = chats.filter(c => !c.isGroup);
@@ -148,8 +180,7 @@ async function runExtractMode(client, db) {
     
     try {
         // Obtener todos los chats individuales (no grupos)
-        logger.info('Obteniendo lista de chats...');
-        const allChats = await client.getChats();
+        const allChats = await getChatsWithRetry(client);
         const chats = allChats.filter(c => !c.isGroup);
         
         logger.info(`Total de chats individuales encontrados: ${chats.length}`);
@@ -322,7 +353,11 @@ async function main() {
         
         client.initialize().catch(reject);
     });
-    
+
+    // WhatsApp Web sigue sincronizando después de `ready`. Darle tiempo
+    // antes de llamar getChats() para evitar "Execution context was destroyed".
+    await waitForSync(client, parseInt(process.env.POST_READY_SYNC_MS || '30000'));
+
     // Ejecutar según el modo
     switch (mode) {
         case 'test':
