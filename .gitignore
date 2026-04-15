@@ -1,0 +1,52 @@
+# Environment
+.env
+.env.local
+.env.production
+
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Data (never commit real data)
+data/raw/
+data/audios/
+data/images/
+data/documents/
+data/transcripts/
+data/analysis/
+data/exports/
+
+# WhatsApp session
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Logs
+logs/
+*.log
+
+# Backups
+backups/
+
+# Docker volumes
+postgres_data/
+redis_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# SSL certs
+certbot/
+letsencrypt/
+
+# Build
+.next/
+out/
+build/
+dist/
