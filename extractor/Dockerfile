@@ -25,7 +25,7 @@ WORKDIR /app
 
 # Copiar package.json primero para cachear dependencias
 COPY package.json package-lock.json* ./
-RUN npm ci --production
+RUN npm install --omit=dev
 
 # Copiar código fuente
 COPY src/ ./src/
