@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
     libxrandr2 \
     libgdk-pixbuf2.0-0 \
     libgtk-3-0 \
-    libasound2t64 \
+    libasound2 \
     fonts-noto-color-emoji \
     fonts-noto \
     && rm -rf /var/lib/apt/lists/*
@@ -36,6 +36,7 @@ RUN mkdir -p /app/data/raw /app/data/audios /app/.wwebjs_auth
 # No correr como root
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 RUN chown -R appuser:appuser /app
-USER appuser
+# Chromium (--no-sandbox + --single-process) requiere root dentro del contenedor
+# USER appuser
 
 CMD ["node", "src/index.js"]
