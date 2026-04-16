@@ -128,6 +128,19 @@ class Extractor {
         }
     }
 
+    // ─── "CALENTAR" UN CHAT ANTES DE PEDIR MENSAJES ────────
+    // WhatsApp Web inicializa estructuras internas (incluyendo
+    // waitForChatLoading) cuando un chat se abre/toca. Si llamamos
+    // fetchMessages sin eso, falla con "Cannot read properties of
+    // undefined (reading 'waitForChatLoading')". Forzamos la carga
+    // tocando lastMessage, sendSeen() y un fetchMessages mínimo.
+    async _warmUpChat(chat) {
+        try { void chat.lastMessage; } catch (_) {}
+        try { await chat.sendSeen(); } catch (_) {}
+        try { await chat.fetchMessages({ limit: 1 }); } catch (_) {}
+        await sleep(5000);
+    }
+
     // ─── OBTENER TODOS LOS MENSAJES DE UN CHAT ─────────────
     // whatsapp-web.js internamente llama loadEarlierMsgs() hasta alcanzar
     // el `limit` o agotar el historial. `Infinity` a veces hace timeout del
@@ -135,35 +148,52 @@ class Extractor {
     // Además, paginamos hasta que dos iteraciones seguidas devuelvan la
     // misma cantidad (WA puede seguir sincronizando en background).
     async fetchAllMessages(chat) {
+        // Si el primer intento completo falla sin traer nada,
+        // esperamos 15s y reintentamos una vez más.
+        let messages = await this._fetchAllMessagesOnce(chat);
+        if (!messages || messages.length === 0) {
+            logger.warn(`  ⚠️  Primer intento devolvió 0 mensajes. Esperando 15s y reintentando...`);
+            await sleep(15000);
+            messages = await this._fetchAllMessagesOnce(chat);
+        }
+        return messages;
+    }
+
+    async _fetchAllMessagesOnce(chat) {
         const HARD_LIMIT = 999999;
         const MAX_ROUNDS = 6;
         const ROUND_WAIT_MS = 4000;
 
-        // Darle a WhatsApp Web un momento para sincronizar ESTE chat
-        // antes de empezar a pedir historial.
-        await sleep(2000);
+        await this._warmUpChat(chat);
 
         let lastCount = -1;
         let messages = [];
 
         for (let round = 1; round <= MAX_ROUNDS; round++) {
             let attempt = 0;
+            let roundSucceeded = false;
             while (attempt < 3) {
                 try {
                     messages = await chat.fetchMessages({ limit: HARD_LIMIT });
+                    roundSucceeded = true;
                     break;
                 } catch (error) {
                     attempt++;
                     logger.warn(`  ⚠️  fetchMessages falló (ronda ${round}, intento ${attempt}/3): ${error.message}`);
-                    if (attempt >= 3) {
-                        if (messages.length > 0) {
-                            logger.warn(`  ⚠️  Devolviendo ${messages.length} mensajes cargados antes del fallo`);
-                            return this._sortChronological(messages);
-                        }
-                        return [];
-                    }
+                    if (attempt >= 3) break;
+                    // Re-calentar antes del siguiente intento — el chat
+                    // puede no haber terminado de inicializarse.
+                    await this._warmUpChat(chat);
                     await sleep(3000 * attempt);
                 }
+            }
+
+            if (!roundSucceeded) {
+                if (messages.length > 0) {
+                    logger.warn(`  ⚠️  Devolviendo ${messages.length} mensajes cargados antes del fallo`);
+                    return this._sortChronological(messages);
+                }
+                return [];
             }
 
             logger.info(`  📜 Ronda ${round}: ${messages.length} mensajes cargados`);
