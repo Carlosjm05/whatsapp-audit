@@ -128,91 +128,147 @@ class Extractor {
         }
     }
 
-    // ─── "CALENTAR" UN CHAT ANTES DE PEDIR MENSAJES ────────
-    // WhatsApp Web inicializa estructuras internas (incluyendo
-    // waitForChatLoading) cuando un chat se abre/toca. Si llamamos
-    // fetchMessages sin eso, falla con "Cannot read properties of
-    // undefined (reading 'waitForChatLoading')". Forzamos la carga
-    // tocando lastMessage, sendSeen() y un fetchMessages mínimo.
-    async _warmUpChat(chat) {
-        try { void chat.lastMessage; } catch (_) {}
-        try { await chat.sendSeen(); } catch (_) {}
-        try { await chat.fetchMessages({ limit: 1 }); } catch (_) {}
-        await sleep(5000);
-    }
-
     // ─── OBTENER TODOS LOS MENSAJES DE UN CHAT ─────────────
-    // whatsapp-web.js internamente llama loadEarlierMsgs() hasta alcanzar
-    // el `limit` o agotar el historial. `Infinity` a veces hace timeout del
-    // protocolo; usamos un entero muy grande y reintentamos con backoff.
-    // Además, paginamos hasta que dos iteraciones seguidas devuelvan la
-    // misma cantidad (WA puede seguir sincronizando en background).
+    // Estrategia: acceder al Store interno de WhatsApp Web vía
+    // pupPage.evaluate(), bypasseando chat.fetchMessages() que
+    // depende de módulos internos que a veces no cargan
+    // (waitForChatLoading). Si Store falla, intenta fetchMessages
+    // como fallback.
     async fetchAllMessages(chat) {
-        // Si el primer intento completo falla sin traer nada,
-        // esperamos 15s y reintentamos una vez más.
-        let messages = await this._fetchAllMessagesOnce(chat);
-        if (!messages || messages.length === 0) {
-            logger.warn(`  ⚠️  Primer intento devolvió 0 mensajes. Esperando 15s y reintentando...`);
-            await sleep(15000);
-            messages = await this._fetchAllMessagesOnce(chat);
+        const chatId = chat.id._serialized;
+
+        // ── Intento 1: Store directo ──
+        try {
+            const msgs = await this._fetchViaStore(chatId);
+            if (msgs && msgs.length > 0) {
+                logger.info(`  📦 ${msgs.length} mensajes obtenidos vía Store`);
+                return msgs;
+            }
+            logger.warn('  ⚠️  Store devolvió 0 mensajes');
+        } catch (err) {
+            logger.warn(`  ⚠️  Store falló: ${err.message}`);
         }
-        return messages;
+
+        // ── Intento 2: esperar + Store de nuevo ──
+        logger.info('  ⏳ Esperando 15s y reintentando vía Store...');
+        await sleep(15000);
+        try {
+            const msgs = await this._fetchViaStore(chatId);
+            if (msgs && msgs.length > 0) {
+                logger.info(`  📦 ${msgs.length} mensajes obtenidos vía Store (2do intento)`);
+                return msgs;
+            }
+        } catch (err) {
+            logger.warn(`  ⚠️  Store 2do intento falló: ${err.message}`);
+        }
+
+        // ── Intento 3: fetchMessages clásico (por si Store no aplica) ──
+        logger.info('  🔄 Intentando chat.fetchMessages() como fallback...');
+        try {
+            const msgs = await chat.fetchMessages({ limit: 999999 });
+            if (msgs && msgs.length > 0) {
+                msgs.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+                logger.info(`  📦 ${msgs.length} mensajes obtenidos vía fetchMessages`);
+                return msgs;
+            }
+        } catch (err) {
+            logger.warn(`  ⚠️  fetchMessages falló: ${err.message}`);
+        }
+
+        return [];
     }
 
-    async _fetchAllMessagesOnce(chat) {
-        const HARD_LIMIT = 999999;
-        const MAX_ROUNDS = 6;
-        const ROUND_WAIT_MS = 4000;
+    // Acceso directo al Store interno de WhatsApp Web.
+    // Carga historial con loadEarlierMsgs() y extrae datos de
+    // chat.msgs._models sin depender de fetchMessages.
+    async _fetchViaStore(chatId) {
+        const page = this.client.pupPage;
+        if (!page) throw new Error('pupPage no disponible');
 
-        await this._warmUpChat(chat);
+        const rawMessages = await page.evaluate(async (chatId) => {
+            // Verificar que Store existe
+            if (!window.Store || !window.Store.Chat) {
+                throw new Error('Store.Chat no disponible');
+            }
 
-        let lastCount = -1;
-        let messages = [];
+            const chat = window.Store.Chat.get(chatId);
+            if (!chat) throw new Error(`Chat ${chatId} no encontrado en Store`);
 
-        for (let round = 1; round <= MAX_ROUNDS; round++) {
-            let attempt = 0;
-            let roundSucceeded = false;
-            while (attempt < 3) {
-                try {
-                    messages = await chat.fetchMessages({ limit: HARD_LIMIT });
-                    roundSucceeded = true;
-                    break;
-                } catch (error) {
-                    attempt++;
-                    logger.warn(`  ⚠️  fetchMessages falló (ronda ${round}, intento ${attempt}/3): ${error.message}`);
-                    if (attempt >= 3) break;
-                    // Re-calentar antes del siguiente intento — el chat
-                    // puede no haber terminado de inicializarse.
-                    await this._warmUpChat(chat);
-                    await sleep(3000 * attempt);
+            // Cargar historial más antiguo. loadEarlierMsgs trae
+            // ~20-30 mensajes por llamada. Repetimos hasta que deje
+            // de devolver o lleguemos a un tope razonable.
+            if (window.Store.ConversationMsgs) {
+                const MAX_LOADS = 80;
+                let emptyRounds = 0;
+                for (let i = 0; i < MAX_LOADS; i++) {
+                    try {
+                        const loaded = await window.Store.ConversationMsgs.loadEarlierMsgs(chat);
+                        if (!loaded || loaded.length === 0) {
+                            emptyRounds++;
+                            if (emptyRounds >= 3) break;
+                        } else {
+                            emptyRounds = 0;
+                        }
+                    } catch (e) {
+                        break;
+                    }
                 }
             }
 
-            if (!roundSucceeded) {
-                if (messages.length > 0) {
-                    logger.warn(`  ⚠️  Devolviendo ${messages.length} mensajes cargados antes del fallo`);
-                    return this._sortChronological(messages);
-                }
-                return [];
+            // Extraer modelos de mensajes
+            let models = [];
+            if (chat.msgs && chat.msgs._models) {
+                models = chat.msgs._models;
+            } else if (chat.msgs && typeof chat.msgs.getModelsArray === 'function') {
+                models = chat.msgs.getModelsArray();
+            } else if (chat.msgs && typeof chat.msgs.toArray === 'function') {
+                models = chat.msgs.toArray();
             }
 
-            logger.info(`  📜 Ronda ${round}: ${messages.length} mensajes cargados`);
+            return models.map(m => {
+                const type = m.type || 'chat';
+                const hasMedia = !!(
+                    m.isMedia || m.mediaData ||
+                    type === 'image' || type === 'video' ||
+                    type === 'audio' || type === 'ptt' ||
+                    type === 'document' || type === 'sticker'
+                );
 
-            // Si no crecimos desde la ronda anterior, asumimos historial completo.
-            if (messages.length === lastCount) {
-                break;
-            }
-            lastCount = messages.length;
+                return {
+                    id: {
+                        id: (m.id && m.id.id) || '',
+                        _serialized: (m.id && m.id._serialized) || '',
+                        fromMe: !!(m.id && m.id.fromMe),
+                    },
+                    body: m.body || '',
+                    type: type,
+                    timestamp: m.t || 0,
+                    fromMe: !!(m.id && m.id.fromMe),
+                    hasMedia: hasMedia,
+                    isForwarded: m.isForwarded || false,
+                    hasQuotedMsg: !!m.quotedStanzaID,
+                    _data: {
+                        notifyName: m.notifyName || null,
+                        duration: m.duration || null,
+                    },
+                    _isStoreMsg: true,
+                };
+            });
+        }, chatId);
 
-            // Esperar a que WhatsApp cargue más historial en background.
-            await sleep(ROUND_WAIT_MS);
-        }
+        if (!rawMessages || rawMessages.length === 0) return [];
 
-        return this._sortChronological(messages);
-    }
+        // Filtrar mensajes de sistema (e2e_notification, etc.)
+        const filtered = rawMessages.filter(m =>
+            m.type !== 'e2e_notification' &&
+            m.type !== 'notification_template' &&
+            m.type !== 'gp2' &&
+            m.type !== 'notification' &&
+            m.type !== 'ciphertext'
+        );
 
-    _sortChronological(messages) {
-        return [...messages].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+        filtered.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+        return filtered;
     }
 
     // ─── PROCESAR UN MENSAJE INDIVIDUAL ─────────────────────
@@ -264,11 +320,28 @@ class Extractor {
     // ─── DESCARGAR MEDIA ────────────────────────────────────
     async downloadMedia(msg, chatId, mediaType) {
         const maxRetries = this.config.maxRetries;
-        
+
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                const media = await msg.downloadMedia();
-                
+                let media;
+                if (msg._isStoreMsg) {
+                    // Mensajes del Store no tienen downloadMedia(); obtener
+                    // el Message real de whatsapp-web.js vía su ID serializado.
+                    const serializedId = msg.id?._serialized;
+                    if (!serializedId) {
+                        logger.warn(`  ⚠️  Sin ID serializado para media`);
+                        return null;
+                    }
+                    const realMsg = await this.client.getMessageById(serializedId);
+                    if (!realMsg) {
+                        logger.warn(`  ⚠️  getMessageById devolvió null: ${serializedId}`);
+                        return null;
+                    }
+                    media = await realMsg.downloadMedia();
+                } else {
+                    media = await msg.downloadMedia();
+                }
+
                 if (!media || !media.data) {
                     logger.warn(`  ⚠️  Media vacío para ${msg.id?.id}`);
                     return null;
