@@ -241,6 +241,63 @@ def get_retry_count(lead_id: str) -> int:
         return int(row["rc"]) if row else 0
 
 
+# ─── HISTORIAL DE ANÁLISIS (lead_analysis_history) ────────────
+# El API `/api/leads/{id}/reanalyze` crea una fila 'pending' en esta
+# tabla; el analyzer la promociona a 'processing' al empezar y a
+# 'completed'/'failed' al terminar. Si no hay fila pendiente (caso
+# corrida automática sin reanalyze manual), no hace nada.
+
+def mark_history_processing(lead_id: str) -> None:
+    with cursor() as cur:
+        cur.execute(
+            """UPDATE lead_analysis_history
+                 SET status='processing'
+               WHERE id = (
+                 SELECT id FROM lead_analysis_history
+                  WHERE lead_id=%s AND status='pending'
+                  ORDER BY started_at ASC
+                  LIMIT 1
+               )""",
+            (lead_id,),
+        )
+
+
+def mark_history_completed(lead_id: str, model_used: str,
+                           cost_usd: float) -> None:
+    with cursor() as cur:
+        cur.execute(
+            """UPDATE lead_analysis_history
+                 SET status='completed',
+                     completed_at=NOW(),
+                     model_used=%s,
+                     cost_usd=%s
+               WHERE id = (
+                 SELECT id FROM lead_analysis_history
+                  WHERE lead_id=%s AND status='processing'
+                  ORDER BY started_at DESC
+                  LIMIT 1
+               )""",
+            (model_used, cost_usd, lead_id),
+        )
+
+
+def mark_history_failed(lead_id: str, error: str) -> None:
+    with cursor() as cur:
+        cur.execute(
+            """UPDATE lead_analysis_history
+                 SET status='failed',
+                     completed_at=NOW(),
+                     error_message=%s
+               WHERE id = (
+                 SELECT id FROM lead_analysis_history
+                  WHERE lead_id=%s AND status IN ('pending', 'processing')
+                  ORDER BY started_at DESC
+                  LIMIT 1
+               )""",
+            (error[:2000] if error else None, lead_id),
+        )
+
+
 # ─── INSUFFICIENT DATA ────────────────────────────────────────
 def write_insufficient(lead_id: str, conversation_id: str, summary_text: str) -> None:
     with cursor() as cur:

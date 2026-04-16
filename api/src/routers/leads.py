@@ -1,6 +1,7 @@
 """Panel 2: Recoverable leads + lead detail."""
 from __future__ import annotations
 
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -10,6 +11,16 @@ from ..db import fetch_all, fetch_one, execute
 from ..schemas import LeadDetail, PagedRecoverableLeads
 
 router = APIRouter(prefix="/api/leads", tags=["leads"])
+
+
+def _parse_lead_id(lead_id: str) -> str:
+    """Valida que lead_id sea un UUID bien formado antes de llegar al
+    driver. Sin esto, un path param inválido (ej. /api/leads/foo) genera
+    psycopg2.errors.InvalidTextRepresentation → 500."""
+    try:
+        return str(uuid.UUID(lead_id))
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="ID de lead inválido")
 
 
 @router.get("/recoverable", response_model=PagedRecoverableLeads)
@@ -119,9 +130,10 @@ def reanalyze_lead(lead_id: str, _user: str = Depends(get_current_user)):
     """Encola el lead para re-análisis: marca analysis_status='pending'
     y crea una entrada en lead_analysis_history. El analyzer lo tomará
     en su próxima corrida."""
+    lead_id = _parse_lead_id(lead_id)
     lead = fetch_one("SELECT id, conversation_id FROM leads WHERE id = %s", [lead_id])
     if not lead:
-        raise HTTPException(status_code=404, detail="Lead not found")
+        raise HTTPException(status_code=404, detail="Lead no encontrado")
 
     execute(
         """UPDATE leads SET
@@ -146,8 +158,9 @@ def reanalyze_lead(lead_id: str, _user: str = Depends(get_current_user)):
 @router.get("/{lead_id}/analysis-history")
 def get_analysis_history(lead_id: str, _user: str = Depends(get_current_user)):
     """Historial de análisis del lead, más recientes primero."""
+    lead_id = _parse_lead_id(lead_id)
     if not fetch_one("SELECT 1 FROM leads WHERE id = %s", [lead_id]):
-        raise HTTPException(status_code=404, detail="Lead not found")
+        raise HTTPException(status_code=404, detail="Lead no encontrado")
 
     rows = fetch_all(
         """
@@ -287,13 +300,14 @@ def get_lead_conversation(
 ):
     """Devuelve los mensajes completos del chat del lead, con transcripciones
     si están disponibles. Usado por el visualizador de conversación."""
+    lead_id = _parse_lead_id(lead_id)
     lead = fetch_one(
         "SELECT id, conversation_id, phone, whatsapp_name, real_name "
         "FROM leads WHERE id = %s",
         [lead_id],
     )
     if not lead:
-        raise HTTPException(status_code=404, detail="Lead not found")
+        raise HTTPException(status_code=404, detail="Lead no encontrado")
 
     conv_id = lead["conversation_id"]
     if not conv_id:
@@ -344,9 +358,10 @@ def get_lead_conversation(
 
 @router.get("/{lead_id}", response_model=LeadDetail)
 def get_lead_detail(lead_id: str, _user: str = Depends(get_current_user)) -> LeadDetail:
+    lead_id = _parse_lead_id(lead_id)
     lead = fetch_one("SELECT * FROM leads WHERE id = %s", [lead_id])
     if not lead:
-        raise HTTPException(status_code=404, detail="Lead not found")
+        raise HTTPException(status_code=404, detail="Lead no encontrado")
 
     interests = fetch_one("SELECT * FROM lead_interests WHERE lead_id = %s", [lead_id])
     financials = fetch_one("SELECT * FROM lead_financials WHERE lead_id = %s", [lead_id])

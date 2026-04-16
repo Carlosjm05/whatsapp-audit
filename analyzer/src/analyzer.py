@@ -274,9 +274,15 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
     transcript = lead["full_transcript"] or ""
     word_count = lead.get("word_count") or len(transcript.split())
 
+    # Si fue encolado via POST /reanalyze existe una fila 'pending' en
+    # lead_analysis_history; promoverla a 'processing'. Si no existe
+    # (corrida automática), el UPDATE no toca nada.
+    db.mark_history_processing(lead_id)
+
     if word_count < MIN_WORDS:
         log.info("lead %s datos insuficientes (%d palabras)", lead_id, word_count)
         db.write_insufficient(lead_id, conversation_id, _short_summary(transcript))
+        db.mark_history_completed(lead_id, CLAUDE_MODEL, 0.0)
         return True, 0.0
 
     # Truncar transcripts que exceden el límite de contexto. Preserva
@@ -310,15 +316,16 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
         rc = db.get_retry_count(lead_id) + 1
         status = "failed" if rc >= MAX_RETRIES else "pending"
         db.mark_status(lead_id, status, retry_count=rc, error=str(e)[:500])
-        log.error("lead %s error de API (retry %d/%d): %s",
+        if status == "failed":
+            db.mark_history_failed(lead_id, f"api: {e}")
+        log.error("lead %s error de API (reintento %d/%d): %s",
                   lead_id, rc, MAX_RETRIES, e)
-        db.log_system("error", f"api error lead {lead_id}",
-                      {"lead_id": lead_id, "error": str(e)[:500], "retry": rc})
         return False, 0.0
     except (ValueError, json.JSONDecodeError, KeyError) as e:
         # JSON malformado, estructura inesperada — no retriable.
         db.mark_status(lead_id, "failed", retry_count=MAX_RETRIES,
                        error=f"parseo JSON: {str(e)[:400]}")
+        db.mark_history_failed(lead_id, f"parseo JSON: {e}")
         log.error("lead %s JSON malformado (no retriable): %s", lead_id, e)
         return False, 0.0
     except Exception as e:
@@ -326,18 +333,19 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
         rc = db.get_retry_count(lead_id) + 1
         status = "failed" if rc >= MAX_RETRIES else "pending"
         db.mark_status(lead_id, status, retry_count=rc, error=str(e)[:500])
-        log.error("lead %s error inesperado (retry %d/%d): %s",
+        if status == "failed":
+            db.mark_history_failed(lead_id, str(e))
+        log.error("lead %s error inesperado (reintento %d/%d): %s",
                   lead_id, rc, MAX_RETRIES, e)
         return False, 0.0
 
     try:
         validated = AnalysisOutput.model_validate(raw)
     except Exception as e:
-        rc = db.get_retry_count(lead_id) + 1
-        status = "failed" if rc >= MAX_RETRIES else "pending"
-        db.mark_status(lead_id, status, retry_count=rc,
-                       error=f"validation: {str(e)[:400]}")
-        log.error("lead %s validation failed: %s", lead_id, e)
+        db.mark_status(lead_id, "failed", retry_count=MAX_RETRIES,
+                       error=f"validacion: {str(e)[:400]}")
+        db.mark_history_failed(lead_id, f"validacion: {e}")
+        log.error("lead %s validacion fallida (no retriable): %s", lead_id, e)
         return False, cost
 
     try:
@@ -352,10 +360,13 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
         status = "failed" if rc >= MAX_RETRIES else "pending"
         db.mark_status(lead_id, status, retry_count=rc,
                        error=f"persist: {str(e)[:400]}")
-        log.error("lead %s persist failed: %s", lead_id, e)
+        if status == "failed":
+            db.mark_history_failed(lead_id, f"persist: {e}")
+        log.error("lead %s persist fallido: %s", lead_id, e)
         return False, cost
 
-    log.info("lead %s analyzed OK (cost $%.4f)", lead_id, cost)
+    db.mark_history_completed(lead_id, CLAUDE_MODEL, cost)
+    log.info("lead %s analizado OK (costo $%.4f)", lead_id, cost)
     return True, cost
 
 
