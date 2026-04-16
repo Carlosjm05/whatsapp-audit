@@ -114,6 +114,68 @@ def list_recoverable_leads(
     return PagedRecoverableLeads(total=total, limit=limit, offset=offset, rows=rows)
 
 
+@router.get("/{lead_id}/conversation")
+def get_lead_conversation(
+    lead_id: str,
+    _user: str = Depends(get_current_user),
+):
+    """Devuelve los mensajes completos del chat del lead, con transcripciones
+    si están disponibles. Usado por el visualizador de conversación."""
+    lead = fetch_one(
+        "SELECT id, conversation_id, phone, whatsapp_name, real_name "
+        "FROM leads WHERE id = %s",
+        [lead_id],
+    )
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    conv_id = lead["conversation_id"]
+    if not conv_id:
+        return {
+            "conversation_id": None,
+            "chat_name": lead.get("real_name") or lead.get("whatsapp_name"),
+            "phone": lead.get("phone"),
+            "messages": [],
+            "total": 0,
+        }
+
+    messages = fetch_all(
+        """
+        SELECT
+            m.id,
+            m.message_id,
+            to_char(m.timestamp, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS timestamp,
+            m.sender,
+            m.sender_name,
+            m.message_type,
+            m.body,
+            m.media_path,
+            m.media_duration_sec,
+            m.media_mimetype,
+            m.is_forwarded,
+            m.is_reply,
+            m.reply_to_id,
+            t.transcription_text,
+            t.confidence_score AS transcription_confidence,
+            t.is_low_confidence
+        FROM messages m
+        LEFT JOIN transcriptions t ON t.message_id = m.id
+                                    AND t.status = 'completed'
+        WHERE m.conversation_id = %s
+        ORDER BY m.timestamp ASC
+        """,
+        [conv_id],
+    )
+
+    return {
+        "conversation_id": str(conv_id),
+        "chat_name": lead.get("real_name") or lead.get("whatsapp_name"),
+        "phone": lead.get("phone"),
+        "messages": messages,
+        "total": len(messages),
+    }
+
+
 @router.get("/{lead_id}", response_model=LeadDetail)
 def get_lead_detail(lead_id: str, _user: str = Depends(get_current_user)) -> LeadDetail:
     lead = fetch_one("SELECT * FROM leads WHERE id = %s", [lead_id])
