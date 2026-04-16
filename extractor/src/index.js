@@ -185,6 +185,17 @@ async function runExtractMode(client, db, options = {}) {
 
         logger.info(`Total de chats individuales encontrados: ${chats.length}`);
 
+        // --phone=573001234567: extraer solo el chat de ese número
+        if (options.phone) {
+            const phone = String(options.phone).replace(/[^0-9]/g, '');
+            const match = chats.find(c => (c.id?.user || c.id?._serialized?.split('@')[0]) === phone);
+            if (!match) {
+                throw new Error(`No se encontró chat individual para el número ${phone}`);
+            }
+            logger.info(`⚙️  --phone=${phone} aplicado: extrayendo solo ${match.name || phone}`);
+            chats = [match];
+        }
+
         // --limit=N: solo los primeros N chats individuales
         if (options.limit && options.limit > 0 && options.limit < chats.length) {
             logger.info(`⚙️  --limit=${options.limit} aplicado: extrayendo solo los primeros ${options.limit} chats`);
@@ -322,11 +333,17 @@ async function main() {
         logger.error(`Valor inválido para --limit: ${args.limit}`);
         process.exit(1);
     }
+    const phone = args.phone ? String(args.phone).replace(/[^0-9]/g, '') : null;
+    if (args.phone && !phone) {
+        logger.error(`Valor inválido para --phone: ${args.phone}`);
+        process.exit(1);
+    }
 
     logger.info('══════════════════════════════════════════════');
     logger.info('  WHATSAPP AUDIT SYSTEM — EXTRACTOR');
     logger.info(`  Modo: ${mode.toUpperCase()}`);
     if (limit) logger.info(`  Límite: ${limit} chats`);
+    if (phone) logger.info(`  Teléfono: ${phone}`);
     logger.info('══════════════════════════════════════════════');
     
     // Conectar a base de datos
@@ -376,7 +393,7 @@ async function main() {
             await runTestMode(client);
             break;
         case 'extract':
-            await runExtractMode(client, db, { limit });
+            await runExtractMode(client, db, { limit, phone });
             break;
         default:
             logger.error(`Modo desconocido: ${mode}`);
