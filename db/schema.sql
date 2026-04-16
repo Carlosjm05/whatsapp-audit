@@ -21,11 +21,7 @@ CREATE TABLE extraction_runs (
     total_chats     INTEGER DEFAULT 0,
     extracted_chats INTEGER DEFAULT 0,
     failed_chats    INTEGER DEFAULT 0,
-    total_audios    INTEGER DEFAULT 0,
-    total_media     INTEGER DEFAULT 0,
-    disk_usage_mb   DECIMAL(10,2) DEFAULT 0,
     error_log       TEXT,
-    metadata        JSONB DEFAULT '{}'::jsonb,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -152,7 +148,7 @@ CREATE TABLE leads (
 
 -- ─────────────────────────────────────────────
 -- TABLA: lead_interests
--- Qué le interesa al lead
+-- Qué le interesa al lead (lista: N por lead)
 -- ─────────────────────────────────────────────
 CREATE TABLE lead_interests (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -172,11 +168,11 @@ CREATE TABLE lead_interests (
 
 -- ─────────────────────────────────────────────
 -- TABLA: lead_financials
--- Situación financiera del lead
+-- Situación financiera del lead (UNIQUE por lead)
 -- ─────────────────────────────────────────────
 CREATE TABLE lead_financials (
     id                          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    lead_id                     UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    lead_id                     UUID NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
     budget_verbatim             TEXT,
     budget_estimated_cop        BIGINT,
     budget_range                VARCHAR(30)
@@ -196,12 +192,12 @@ CREATE TABLE lead_financials (
 
 -- ─────────────────────────────────────────────
 -- TABLA: lead_intent
--- Intención y urgencia de compra
+-- Intención y urgencia de compra (UNIQUE por lead)
 -- ─────────────────────────────────────────────
 CREATE TABLE lead_intent (
     id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    lead_id                 UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
-    intent_score            SMALLINT CHECK (intent_score BETWEEN 1 AND 10),
+    lead_id                 UUID NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
+    intent_score            SMALLINT DEFAULT 5 CHECK (intent_score BETWEEN 1 AND 10),
     intent_justification    TEXT,
     urgency                 VARCHAR(30)
                             CHECK (urgency IN ('comprar_ya', '1_3_meses', '3_6_meses', 'mas_6_meses', 'no_sabe', 'no_especificado')),
@@ -215,7 +211,7 @@ CREATE TABLE lead_intent (
 
 -- ─────────────────────────────────────────────
 -- TABLA: lead_objections
--- Objeciones y dudas del lead
+-- Objeciones y dudas del lead (lista: N por lead)
 -- ─────────────────────────────────────────────
 CREATE TABLE lead_objections (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -233,11 +229,11 @@ CREATE TABLE lead_objections (
 
 -- ─────────────────────────────────────────────
 -- TABLA: conversation_metrics
--- Métricas de la conversación
+-- Métricas de la conversación (UNIQUE por lead)
 -- ─────────────────────────────────────────────
 CREATE TABLE conversation_metrics (
     id                          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    lead_id                     UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    lead_id                     UUID NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
     conversation_id             UUID NOT NULL REFERENCES raw_conversations(id) ON DELETE CASCADE,
     total_messages              INTEGER DEFAULT 0,
     advisor_messages            INTEGER DEFAULT 0,
@@ -260,11 +256,11 @@ CREATE TABLE conversation_metrics (
 
 -- ─────────────────────────────────────────────
 -- TABLA: response_times
--- Tiempos de respuesta
+-- Tiempos de respuesta (UNIQUE por lead)
 -- ─────────────────────────────────────────────
 CREATE TABLE response_times (
     id                          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    lead_id                     UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    lead_id                     UUID NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
     first_response_minutes      DECIMAL(10,2),
     avg_response_minutes        DECIMAL(10,2),
     longest_gap_hours           DECIMAL(10,2),
@@ -279,11 +275,11 @@ CREATE TABLE response_times (
 
 -- ─────────────────────────────────────────────
 -- TABLA: advisor_scores
--- Calificación del asesor por conversación
+-- Calificación del asesor por conversación (UNIQUE por lead)
 -- ─────────────────────────────────────────────
 CREATE TABLE advisor_scores (
     id                          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    lead_id                     UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    lead_id                     UUID NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
     conversation_id             UUID NOT NULL REFERENCES raw_conversations(id) ON DELETE CASCADE,
     advisor_name                VARCHAR(255),
     advisor_phone               VARCHAR(20),
@@ -301,11 +297,11 @@ CREATE TABLE advisor_scores (
 
 -- ─────────────────────────────────────────────
 -- TABLA: conversation_outcomes
--- En qué terminó la conversación
+-- En qué terminó la conversación (UNIQUE por lead)
 -- ─────────────────────────────────────────────
 CREATE TABLE conversation_outcomes (
     id                          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    lead_id                     UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    lead_id                     UUID NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
     final_status                VARCHAR(30) NOT NULL
                                 CHECK (final_status IN (
                                     'venta_cerrada',
@@ -338,7 +334,7 @@ CREATE TABLE conversation_outcomes (
 
 -- ─────────────────────────────────────────────
 -- TABLA: competitor_intel
--- Inteligencia competitiva
+-- Inteligencia competitiva (lista: N por lead)
 -- ─────────────────────────────────────────────
 CREATE TABLE competitor_intel (
     id                      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -353,7 +349,7 @@ CREATE TABLE competitor_intel (
 
 -- ─────────────────────────────────────────────
 -- TABLA: conversation_summaries
--- Resumen ejecutivo de cada conversación
+-- Resumen ejecutivo de cada conversación (UNIQUE por lead)
 -- ─────────────────────────────────────────────
 CREATE TABLE conversation_summaries (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -384,62 +380,23 @@ CREATE TABLE dapta_knowledge_base (
 );
 
 -- ─────────────────────────────────────────────
--- TABLA: system_logs
--- Logs del sistema para monitoreo
+-- TABLA: lead_analysis_history
+-- Historial de cada análisis/re-análisis de un lead.
+-- El análisis "actual" (leads.*) es siempre la última entrada
+-- completada. Esta tabla preserva versiones anteriores.
+-- Antes vivía en db/migrations/003_* — integrada aquí 2026-04-16.
 -- ─────────────────────────────────────────────
-CREATE TABLE system_logs (
+CREATE TABLE lead_analysis_history (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    module          VARCHAR(30) NOT NULL
-                    CHECK (module IN ('extractor', 'transcriber', 'analyzer', 'api', 'backup', 'system')),
-    level           VARCHAR(10) NOT NULL
-                    CHECK (level IN ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')),
-    message         TEXT NOT NULL,
-    details         JSONB,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ─────────────────────────────────────────────
--- TABLA: processing_stats
--- Estadísticas de procesamiento en tiempo real
--- ─────────────────────────────────────────────
-CREATE TABLE processing_stats (
-    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    module              VARCHAR(30) NOT NULL,
-    stat_key            VARCHAR(100) NOT NULL,
-    stat_value          DECIMAL(15,4),
-    stat_text           TEXT,
-    recorded_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(module, stat_key, recorded_at)
-);
-
--- ─────────────────────────────────────────────
--- TABLA: projects_catalog
--- Catálogo de proyectos de Ortiz Finca Raíz
--- (se llena manualmente antes de correr el análisis)
--- ─────────────────────────────────────────────
-CREATE TABLE projects_catalog (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    project_name    VARCHAR(255) NOT NULL UNIQUE,
-    project_type    VARCHAR(50),
-    location        VARCHAR(255),
-    city            VARCHAR(100),
-    price_range     VARCHAR(100),
-    description     TEXT,
-    is_active       BOOLEAN DEFAULT true,
-    aliases         TEXT[],
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ─────────────────────────────────────────────
--- TABLA: advisors_catalog
--- Catálogo de asesores
--- (se llena manualmente antes de correr el análisis)
--- ─────────────────────────────────────────────
-CREATE TABLE advisors_catalog (
-    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    advisor_name    VARCHAR(255) NOT NULL,
-    advisor_phone   VARCHAR(20) UNIQUE,
-    is_active       BOOLEAN DEFAULT true,
-    aliases         TEXT[],
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    lead_id         UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    triggered_by    VARCHAR(50) DEFAULT 'auto',
+    status          VARCHAR(20) NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    model_used      VARCHAR(100),
+    cost_usd        DECIMAL(10, 6),
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at    TIMESTAMPTZ,
+    error_message   TEXT,
+    diff_summary    TEXT,
+    raw_output      JSONB
 );
