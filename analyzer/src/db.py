@@ -2,10 +2,72 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 import psycopg2
 import psycopg2.extras
+
+
+# ─── SANITIZADORES DE ENUMS ──────────────────────────────────
+# Último guardián antes del INSERT: si el validador falló o Claude
+# devuelve algo raro, coerce al default en vez de violar CHECK.
+YES_NO_UNKNOWN_SET = {"si", "no", "desconocido"}
+LEAD_SOURCES_SET = {
+    "anuncio_facebook", "anuncio_instagram", "google_ads", "referido",
+    "busqueda_organica", "portal_inmobiliario", "otro", "desconocido",
+}
+PRODUCT_TYPES_SET = {
+    "lote", "arriendo", "compra_inmueble", "inversion", "local_comercial",
+    "bodega", "finca", "otro",
+}
+PURPOSES_SET = {
+    "vivienda_propia", "inversion", "negocio", "arrendar_terceros", "otro",
+    "no_especificado",
+}
+BUDGET_RANGES_SET = {
+    "menos_50m", "50_100m", "100_200m", "200_500m", "mas_500m",
+    "no_especificado",
+}
+PAYMENT_METHODS_SET = {
+    "contado", "credito_bancario", "leasing", "financiacion_directa",
+    "cuotas", "subsidio", "mixto", "no_especificado",
+}
+URGENCIES_SET = {
+    "comprar_ya", "1_3_meses", "3_6_meses", "mas_6_meses", "no_sabe",
+    "no_especificado",
+}
+DECISION_MAKERS_SET = {"si", "no_pareja", "no_socio", "no_familiar", "desconocido"}
+OBJECTION_TYPES_SET = {
+    "precio", "ubicacion", "confianza", "tiempo", "financiacion",
+    "competencia", "condiciones_inmueble", "documentacion", "otro",
+}
+RESPONSE_TIME_CATEGORIES_SET = {"excelente", "bueno", "regular", "malo", "critico"}
+FINAL_STATUSES_SET = {
+    "venta_cerrada", "visita_agendada", "negociacion_activa",
+    "seguimiento_activo", "se_enfrio", "ghosteado_por_asesor",
+    "ghosteado_por_lead", "descalificado", "nunca_calificado", "spam",
+    "numero_equivocado", "datos_insuficientes",
+}
+RECOVERY_PROB_SET = {"alta", "media", "baja", "no_aplica"}
+RECOVERY_PRIORITY_SET = {"esta_semana", "este_mes", "puede_esperar", "no_aplica"}
+
+
+def _safe_enum(value: Any, allowed: Set[str], default: Optional[str]) -> Optional[str]:
+    """Si value cae fuera de allowed, retorna default. Acepta None.
+    Coerciona bool → 'si'/'no' para campos YES_NO_UNKNOWN."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        coerced = "si" if value else "no"
+        return coerced if coerced in allowed else default
+    if isinstance(value, str):
+        s = value.strip()
+        if s in allowed:
+            return s
+        lower = s.lower()
+        if lower in allowed:
+            return lower
+    return default
 
 
 def _conn_params() -> Dict[str, Any]:
@@ -263,7 +325,8 @@ def persist_analysis(
                        WHERE id=%s""",
                     (
                         lead.get("real_name"), lead.get("city"), lead.get("zone"),
-                        lead.get("lead_source"), lead.get("lead_source_detail"),
+                        _safe_enum(lead.get("lead_source"), LEAD_SOURCES_SET, "desconocido"),
+                        lead.get("lead_source_detail"),
                         computed.get("first_contact_at") or lead.get("first_contact_at"),
                         computed.get("last_contact_at") or lead.get("last_contact_at"),
                         computed.get("conversation_days") or lead.get("conversation_days"),
@@ -282,10 +345,13 @@ def persist_analysis(
                           specific_conditions)
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (
-                        lead_id, i.get("product_type"), i.get("project_name"),
+                        lead_id,
+                        _safe_enum(i.get("product_type"), PRODUCT_TYPES_SET, "otro"),
+                        i.get("project_name"),
                         i.get("all_projects_mentioned") or [],
                         i.get("desired_zone"), i.get("desired_size"),
-                        i.get("desired_features"), i.get("purpose"),
+                        i.get("desired_features"),
+                        _safe_enum(i.get("purpose"), PURPOSES_SET, "no_especificado"),
                         i.get("specific_conditions"),
                     ),
                 )
@@ -302,10 +368,11 @@ def persist_analysis(
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (
                         lead_id, f.get("budget_verbatim"), f.get("budget_estimated_cop"),
-                        f.get("budget_range"), f.get("payment_method"),
-                        f.get("has_bank_preapproval", "desconocido"),
-                        f.get("offers_trade_in", "desconocido"),
-                        f.get("depends_on_selling", "desconocido"),
+                        _safe_enum(f.get("budget_range"), BUDGET_RANGES_SET, "no_especificado"),
+                        _safe_enum(f.get("payment_method"), PAYMENT_METHODS_SET, "no_especificado"),
+                        _safe_enum(f.get("has_bank_preapproval"), YES_NO_UNKNOWN_SET, "desconocido"),
+                        _safe_enum(f.get("offers_trade_in"), YES_NO_UNKNOWN_SET, "desconocido"),
+                        _safe_enum(f.get("depends_on_selling"), YES_NO_UNKNOWN_SET, "desconocido"),
                         f.get("positive_financial_signals") or [],
                         f.get("negative_financial_signals") or [],
                     ),
@@ -322,10 +389,10 @@ def persist_analysis(
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (
                         lead_id, it.get("intent_score"), it.get("intent_justification"),
-                        it.get("urgency"),
+                        _safe_enum(it.get("urgency"), URGENCIES_SET, "no_especificado"),
                         it.get("high_urgency_signals") or [],
                         it.get("low_urgency_signals") or [],
-                        it.get("is_decision_maker", "desconocido"),
+                        _safe_enum(it.get("is_decision_maker"), DECISION_MAKERS_SET, "desconocido"),
                         bool(it.get("comparing_competitors", False)),
                     ),
                 )
@@ -342,7 +409,7 @@ def persist_analysis(
                         (
                             lead_id, ob.get("objection_text"),
                             ob.get("objection_verbatim"),
-                            ob.get("objection_type"),
+                            _safe_enum(ob.get("objection_type"), OBJECTION_TYPES_SET, "otro"),
                             bool(ob.get("was_resolved", False)),
                             ob.get("advisor_response"),
                             ob.get("response_quality"),
@@ -407,7 +474,11 @@ def persist_analysis(
                         bool(rt.get("lead_had_to_repeat", False)),
                         int(rt.get("repeat_count", 0) or 0),
                         computed.get("advisor_active_hours") or rt.get("advisor_active_hours"),
-                        computed.get("response_time_category") or rt.get("response_time_category"),
+                        _safe_enum(
+                            computed.get("response_time_category") or rt.get("response_time_category"),
+                            RESPONSE_TIME_CATEGORIES_SET,
+                            "regular",
+                        ),
                     ),
                 )
 
@@ -450,16 +521,18 @@ def persist_analysis(
                           alternative_product, recovery_priority)
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (
-                        lead_id, o.get("final_status"), o.get("loss_reason"),
+                        lead_id,
+                        _safe_enum(o.get("final_status"), FINAL_STATUSES_SET, "nunca_calificado"),
+                        o.get("loss_reason"),
                         o.get("loss_point_description"),
                         bool(o.get("is_recoverable", False)),
-                        o.get("recovery_probability") or "no_aplica",
+                        _safe_enum(o.get("recovery_probability"), RECOVERY_PROB_SET, "no_aplica"),
                         o.get("recovery_reason"),
                         o.get("not_recoverable_reason"),
                         o.get("recovery_strategy"),
                         o.get("recovery_message_suggestion"),
                         o.get("alternative_product"),
-                        o.get("recovery_priority") or "no_aplica",
+                        _safe_enum(o.get("recovery_priority"), RECOVERY_PRIORITY_SET, "no_aplica"),
                     ),
                 )
 

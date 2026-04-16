@@ -46,13 +46,18 @@ RECOVERY_PROB = {"alta", "media", "baja", "no_aplica"}
 RECOVERY_PRIORITY = {"esta_semana", "este_mes", "puede_esperar", "no_aplica"}
 
 
-def _in(s: set):
+def _in(s: set, default=None):
+    """Validator que garantiza que el valor esté en `s`. Si no lo está,
+    coacciona al `default` en vez de romper la validación. Esto evita
+    que el analyzer marque leads como 'failed' por variaciones menores
+    en la salida de Claude (que luego rompen el CHECK de Postgres).
+    """
     def _v(cls, v):
         if v is None:
             return v
-        if v not in s:
-            raise ValueError(f"value {v!r} not in {s}")
-        return v
+        if v in s:
+            return v
+        return default
     return _v
 
 
@@ -65,7 +70,7 @@ class LeadCore(BaseModel):
     conversation_days: Optional[int] = None
     datos_insuficientes: bool = False
 
-    _v_src = field_validator("lead_source")(_in(LEAD_SOURCES))
+    _v_src = field_validator("lead_source")(_in(LEAD_SOURCES, default="desconocido"))
 
 
 class LeadInterest(BaseModel):
@@ -78,8 +83,8 @@ class LeadInterest(BaseModel):
     purpose: Optional[str] = "no_especificado"
     specific_conditions: Optional[str] = None
 
-    _v_pt = field_validator("product_type")(_in(PRODUCT_TYPES))
-    _v_pu = field_validator("purpose")(_in(PURPOSES))
+    _v_pt = field_validator("product_type")(_in(PRODUCT_TYPES, default="otro"))
+    _v_pu = field_validator("purpose")(_in(PURPOSES, default="no_especificado"))
 
 
 class LeadFinancials(BaseModel):
@@ -88,14 +93,37 @@ class LeadFinancials(BaseModel):
     budget_range: Optional[str] = "no_especificado"
     payment_method: Optional[str] = "no_especificado"
     has_bank_preapproval: Optional[str] = "desconocido"
-    offers_trade_in: Optional[bool] = False
-    depends_on_selling: Optional[bool] = False
+    # offers_trade_in y depends_on_selling son VARCHAR('si'|'no'|'desconocido')
+    # en el schema, NO booleanos. Antes estaban como Optional[bool] y Pydantic
+    # enviaba False → Postgres → violación de CHECK constraint.
+    offers_trade_in: Optional[str] = "desconocido"
+    depends_on_selling: Optional[str] = "desconocido"
     positive_financial_signals: List[str] = Field(default_factory=list)
     negative_financial_signals: List[str] = Field(default_factory=list)
 
-    _v_br = field_validator("budget_range")(_in(BUDGET_RANGES))
-    _v_pm = field_validator("payment_method")(_in(PAYMENT_METHODS))
-    _v_bp = field_validator("has_bank_preapproval")(_in(YES_NO_UNKNOWN))
+    _v_br = field_validator("budget_range")(_in(BUDGET_RANGES, default="no_especificado"))
+    _v_pm = field_validator("payment_method")(_in(PAYMENT_METHODS, default="no_especificado"))
+    _v_bp = field_validator("has_bank_preapproval")(_in(YES_NO_UNKNOWN, default="desconocido"))
+    _v_ot = field_validator("offers_trade_in", mode="before")(
+        lambda cls, v: _coerce_yes_no_unknown(v))
+    _v_ds = field_validator("depends_on_selling", mode="before")(
+        lambda cls, v: _coerce_yes_no_unknown(v))
+
+
+def _coerce_yes_no_unknown(v):
+    """Coacciona bool/string a 'si'/'no'/'desconocido'. Claude a veces
+    devuelve booleanos para estos campos aunque le pidamos strings."""
+    if v is None:
+        return "desconocido"
+    if isinstance(v, bool):
+        return "si" if v else "no"
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"si", "sí", "yes", "true"}: return "si"
+        if s in {"no", "false"}: return "no"
+        if s in YES_NO_UNKNOWN:
+            return s
+    return "desconocido"
 
 
 class LeadIntent(BaseModel):
@@ -107,8 +135,8 @@ class LeadIntent(BaseModel):
     is_decision_maker: Optional[str] = "desconocido"
     comparing_competitors: bool = False
 
-    _v_u = field_validator("urgency")(_in(URGENCIES))
-    _v_dm = field_validator("is_decision_maker")(_in(DECISION_MAKERS))
+    _v_u = field_validator("urgency")(_in(URGENCIES, default="no_especificado"))
+    _v_dm = field_validator("is_decision_maker")(_in(DECISION_MAKERS, default="desconocido"))
 
     @field_validator("intent_score")
     @classmethod
@@ -127,7 +155,7 @@ class Objection(BaseModel):
     response_quality: int = 5
     is_hidden_objection: bool = False
 
-    _v_ot = field_validator("objection_type")(_in(OBJECTION_TYPES))
+    _v_obt = field_validator("objection_type")(_in(OBJECTION_TYPES, default="otro"))
 
     @field_validator("response_quality")
     @classmethod
@@ -164,7 +192,7 @@ class ResponseTimes(BaseModel):
     advisor_active_hours: Optional[str] = None
     response_time_category: Optional[str] = "regular"
 
-    _v_c = field_validator("response_time_category")(_in(RESPONSE_TIME_CATEGORIES))
+    _v_c = field_validator("response_time_category")(_in(RESPONSE_TIME_CATEGORIES, default="regular"))
 
 
 class AdvisorScores(BaseModel):
@@ -207,9 +235,9 @@ class ConversationOutcome(BaseModel):
     alternative_product: Optional[str] = None
     recovery_priority: Optional[str] = "no_aplica"
 
-    _v_fs = field_validator("final_status")(_in(FINAL_STATUSES))
-    _v_rp = field_validator("recovery_probability")(_in(RECOVERY_PROB))
-    _v_rpr = field_validator("recovery_priority")(_in(RECOVERY_PRIORITY))
+    _v_fs = field_validator("final_status")(_in(FINAL_STATUSES, default="nunca_calificado"))
+    _v_rp = field_validator("recovery_probability")(_in(RECOVERY_PROB, default="no_aplica"))
+    _v_rpr = field_validator("recovery_priority")(_in(RECOVERY_PRIORITY, default="no_aplica"))
 
 
 class CompetitorIntel(BaseModel):
