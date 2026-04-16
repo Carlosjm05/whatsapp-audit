@@ -47,11 +47,13 @@ let syncComplete = false;
 let totalSyncedMsgs = 0;
 
 // ─── CREAR SOCKET DE BAILEYS ────────────────────────────────
+// Puede llamarse múltiples veces (en reconexiones). Los creds se
+// reutilizan desde disco automáticamente vía useMultiFileAuthState.
 async function createSocket() {
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
-    const { version } = await fetchLatestBaileysVersion();
+    const { version, isLatest } = await fetchLatestBaileysVersion();
 
-    logger.info(`Baileys WA v${version.join('.')} — creando socket...`);
+    logger.info(`🔧 Baileys: WA Web v${version.join('.')} ${isLatest ? '(última)' : '(no es la última pero compatible)'}`);
 
     const pinoLogger = P({ level: 'silent' });
 
@@ -64,6 +66,7 @@ async function createSocket() {
         browser: Browsers.macOS('Desktop'),
         syncFullHistory: true,
         printQRInTerminal: false,
+        markOnlineOnConnect: false,
         logger: pinoLogger,
         generateHighQualityLinkPreview: false,
         getMessage: async (key) => {
@@ -77,15 +80,36 @@ async function createSocket() {
     return socket;
 }
 
-// ─── ESPERAR CONEXIÓN + QR ──────────────────────────────────
-async function waitForConnection(socket) {
-    return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-            reject(new Error('Timeout: conexión no establecida en 5 minutos'));
-        }, 300000);
+// Nombre legible para los códigos de DisconnectReason
+function describeDisconnect(statusCode) {
+    const map = {
+        [DisconnectReason.badSession]: 'badSession (400)',
+        [DisconnectReason.connectionClosed]: 'connectionClosed (428)',
+        [DisconnectReason.connectionLost]: 'connectionLost (408)',
+        [DisconnectReason.connectionReplaced]: 'connectionReplaced (440)',
+        [DisconnectReason.loggedOut]: 'loggedOut (401)',
+        [DisconnectReason.restartRequired]: 'restartRequired (515)',
+        [DisconnectReason.timedOut]: 'timedOut (408)',
+        [DisconnectReason.multideviceMismatch]: 'multideviceMismatch (411)',
+    };
+    return map[statusCode] || `código ${statusCode}`;
+}
+
+// ─── ESPERAR RESULTADO DE UNA CONEXIÓN ─────────────────────
+// Resuelve con: 'open', 'restart' (515), 'loggedout', 'retry' u 'timeout'
+function waitForConnectionOutcome(socket) {
+    return new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve('timeout'), 180000);
+        let resolved = false;
+        const done = (outcome) => {
+            if (resolved) return;
+            resolved = true;
+            clearTimeout(timeout);
+            resolve(outcome);
+        };
 
         socket.ev.on('connection.update', (update) => {
-            const { connection, lastDisconnect, qr } = update;
+            const { connection, lastDisconnect, qr, isNewLogin, receivedPendingNotifications } = update;
 
             if (qr) {
                 logger.info('═══════════════════════════════════════════');
@@ -96,25 +120,88 @@ async function waitForConnection(socket) {
                 logger.info('═══════════════════════════════════════════');
             }
 
-            if (connection === 'close') {
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                if (statusCode === DisconnectReason.loggedOut) {
-                    clearTimeout(timeout);
-                    reject(new Error('Sesión cerrada por WhatsApp. Borra auth_state y re-escanea QR.'));
-                } else {
-                    logger.warn(`Conexión cerrada (código: ${statusCode}). Esperando reconexión...`);
-                }
+            if (connection === 'connecting') {
+                logger.info('🔌 connection: connecting...');
+            }
+
+            if (isNewLogin) {
+                logger.info('🆕 Nuevo login detectado (emparejamiento exitoso)');
+            }
+
+            if (receivedPendingNotifications !== undefined) {
+                logger.info(`📨 receivedPendingNotifications: ${receivedPendingNotifications}`);
             }
 
             if (connection === 'open') {
                 logger.info('═══════════════════════════════════════════');
                 logger.info('✅ WHATSAPP CONECTADO — Baileys');
                 logger.info('═══════════════════════════════════════════');
-                clearTimeout(timeout);
-                resolve();
+                done('open');
+            }
+
+            if (connection === 'close') {
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const label = describeDisconnect(statusCode);
+                logger.warn(`❌ connection: close — ${label}`);
+                if (lastDisconnect?.error?.message) {
+                    logger.warn(`   mensaje: ${lastDisconnect.error.message}`);
+                }
+
+                if (statusCode === DisconnectReason.loggedOut) done('loggedout');
+                else if (statusCode === DisconnectReason.restartRequired) done('restart');
+                else done('retry');
             }
         });
     });
+}
+
+// ─── CONECTAR CON AUTO-RECONEXIÓN ──────────────────────────
+// Maneja el flow completo: QR → pairing → restart(515) → connected.
+// El código 515 NO es un error: es la señal estándar de Baileys de
+// que el emparejamiento terminó y hay que recrear el socket.
+async function connectWithRetry() {
+    const MAX_RETRIES = 6;
+    let lastReason = null;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        logger.info(`🔌 Intento de conexión ${attempt}/${MAX_RETRIES}...`);
+
+        const socket = await createSocket();
+        setupHistorySync(socket);
+
+        const outcome = await waitForConnectionOutcome(socket);
+
+        if (outcome === 'open') {
+            return socket;
+        }
+
+        // Cerrar el socket actual antes de crear uno nuevo
+        try { socket.end(undefined); } catch (_) {}
+        await sleep(1500);
+
+        if (outcome === 'loggedout') {
+            throw new Error('Sesión cerrada por WhatsApp (401). Borra el volumen auth_state y re-escanea QR.');
+        }
+
+        if (outcome === 'restart') {
+            logger.info('🔄 restartRequired (515): pairing exitoso, creando socket nuevo con los creds guardados...');
+            lastReason = 'restart';
+            continue;
+        }
+
+        if (outcome === 'timeout') {
+            logger.warn('⚠️  Timeout de 3 min esperando connection.update — reintentando...');
+            lastReason = 'timeout';
+            continue;
+        }
+
+        // 'retry' — cualquier otro close. Backoff leve.
+        logger.info('   Reintentando en 3s...');
+        lastReason = 'retry';
+        await sleep(3000);
+    }
+
+    throw new Error(`No se pudo establecer conexión estable tras ${MAX_RETRIES} intentos (último: ${lastReason})`);
 }
 
 // ─── RECOLECTAR HISTORIAL SINCRONIZADO ──────────────────────
@@ -472,9 +559,8 @@ async function main() {
     }
 
     // Crear socket y conectar
-    sock = await createSocket();
-    setupHistorySync(sock);
-    await waitForConnection(sock);
+    // connectWithRetry maneja internamente: QR, pairing, restart(515), reconexiones
+    sock = await connectWithRetry();
 
     // Esperar sync de historial
     await waitForHistorySync();
