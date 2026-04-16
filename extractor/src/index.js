@@ -91,10 +91,10 @@ function createWhatsAppClient() {
                 '--disable-features=LockProfileCookieDatabase',
             ],
         },
-        webVersionCache: {
-            type: 'remote',
-            remotePath: 'https://raw.githubusercontent.com/nicollaseng/nicollaseng/master/nicollaseng_web_v2.2414.7.json',
-        },
+        // webVersionCache removido: forzar a que whatsapp-web.js obtenga
+        // la versión actual de WhatsApp Web. Versiones cacheadas viejas
+        // provocaban que módulos internos (e.g. waitForChatLoading) no
+        // estuvieran disponibles después de re-vincular el dispositivo.
     });
 
     // ─── EVENTOS DEL CLIENTE ────────────────────────────────
@@ -160,9 +160,56 @@ async function getChatsWithRetry(client, { attempts = 5, initialDelayMs = 5000 }
 }
 
 // Espera a que WhatsApp Web termine de sincronizar tras el evento `ready`.
-async function waitForSync(client, syncMs = 30000) {
+// Después de re-vincular un dispositivo, WA tarda mucho más en cargar
+// módulos internos (waitForChatLoading, etc). 60s es el default; se
+// puede bajar con POST_READY_SYNC_MS si la sesión ya está "caliente".
+async function waitForSync(client, syncMs = 60000) {
     logger.info(`Esperando ${Math.round(syncMs / 1000)}s para que WhatsApp Web termine de sincronizar...`);
     await sleep(syncMs);
+}
+
+// Verifica que WhatsApp Web esté realmente listo sondeando getState()
+// y client.info. Algunos módulos internos del Store sólo quedan
+// disponibles una vez que el estado reporta CONNECTED y el info del
+// usuario está poblado.
+async function waitForStableConnection(client, {
+    maxAttempts = 30,
+    intervalMs = 3000,
+    stableHits = 3,
+} = {}) {
+    logger.info('🔎 Verificando que WhatsApp Web esté realmente listo...');
+    let consecutiveOk = 0;
+    let lastState = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        let state = null;
+        try {
+            state = await client.getState();
+        } catch (err) {
+            logger.warn(`   getState() falló (${attempt}/${maxAttempts}): ${err.message}`);
+        }
+
+        const hasInfo = !!(client.info && (client.info.wid || client.info.me));
+
+        if (state !== lastState) {
+            logger.info(`   Estado: ${state || 'desconocido'} | info: ${hasInfo ? 'ok' : 'pendiente'}`);
+            lastState = state;
+        }
+
+        if (state === 'CONNECTED' && hasInfo) {
+            consecutiveOk++;
+            if (consecutiveOk >= stableHits) {
+                logger.info(`✅ Conexión estable (${stableHits} sondeos CONNECTED + info).`);
+                return;
+            }
+        } else {
+            consecutiveOk = 0;
+        }
+
+        await sleep(intervalMs);
+    }
+
+    logger.warn('⚠️  No se confirmó CONNECTED estable; continuando de todos modos.');
 }
 
 // ─── MODO: TEST DE CONEXIÓN ─────────────────────────────────
@@ -406,28 +453,36 @@ async function main() {
     
     client = createWhatsAppClient();
     
-    // Esperar a que esté listo
+    // Esperar a que esté listo. Resuelve con 'ready' o con
+    // change_state=CONNECTED (safety net, a veces 'ready' tarda o no llega).
     await new Promise((resolve, reject) => {
+        let done = false;
+        const finish = (fn) => (...args) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timeout);
+            fn(...args);
+        };
         const timeout = setTimeout(() => {
+            if (done) return;
+            done = true;
             reject(new Error('Timeout esperando conexión de WhatsApp (5 minutos)'));
         }, 300000); // 5 minutos de timeout
-        
-        client.on('ready', () => {
-            clearTimeout(timeout);
-            resolve();
+
+        client.on('ready', finish(resolve));
+        client.on('change_state', (state) => {
+            if (state === 'CONNECTED') finish(resolve)();
         });
-        
-        client.on('auth_failure', (msg) => {
-            clearTimeout(timeout);
-            reject(new Error(`Auth failure: ${msg}`));
-        });
-        
-        client.initialize().catch(reject);
+        client.on('auth_failure', finish((msg) => reject(new Error(`Auth failure: ${msg}`))));
+
+        client.initialize().catch(finish(reject));
     });
 
-    // WhatsApp Web sigue sincronizando después de `ready`. Darle tiempo
-    // antes de llamar getChats() para evitar "Execution context was destroyed".
-    await waitForSync(client, parseInt(process.env.POST_READY_SYNC_MS || '30000'));
+    // WhatsApp Web sigue sincronizando después de `ready`. Especialmente
+    // tras re-vincular el dispositivo, los módulos internos tardan en
+    // quedar disponibles. Espera fija + sondeo de getState().
+    await waitForSync(client, parseInt(process.env.POST_READY_SYNC_MS || '60000'));
+    await waitForStableConnection(client);
 
     // Ejecutar según el modo
     switch (mode) {
