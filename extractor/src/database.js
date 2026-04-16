@@ -278,20 +278,6 @@ class Database {
         `);
         return result.rows[0];
     }
-
-    // ─── SYSTEM LOGS ────────────────────────────────────────
-    async logSystem(module, level, message, details = null) {
-        try {
-            await this.pool.query(
-                `INSERT INTO system_logs (id, module, level, message, details)
-                 VALUES ($1, $2, $3, $4, $5)`,
-                [uuidv4(), module, level, message, details ? JSON.stringify(details) : null]
-            );
-        } catch (error) {
-            // No fallar por no poder loguear
-            logger.error(`Error guardando log en BD: ${error.message}`);
-        }
-    }
 }
 
 module.exports = { Database };

@@ -549,17 +549,21 @@ def persist_analysis(
 
 
 # ─── SYSTEM LOG ───────────────────────────────────────────────
+# Antes escribía a tabla system_logs; la tabla fue eliminada en Fase 3
+# por ser código muerto (nadie la consultaba). Los callers siguen
+# llamando esta función — redirigimos al logger de Python.
+import logging as _logging
+_sys_log = _logging.getLogger("analyzer.system")
+
+
 def log_system(level: str, message: str,
                details: Optional[Dict[str, Any]] = None) -> None:
-    try:
-        with cursor() as cur:
-            cur.execute(
-                """INSERT INTO system_logs (module, level, message, details)
-                   VALUES ('analyzer', %s, %s, %s::jsonb)""",
-                (level, message, psycopg2.extras.Json(details or {})),
-            )
-    except Exception:
-        pass
+    lvl = (level or "info").lower()
+    log_fn = getattr(_sys_log, lvl, _sys_log.info)
+    if details:
+        log_fn("%s %s", message, details)
+    else:
+        log_fn("%s", message)
 
 
 # ─── STATS ────────────────────────────────────────────────────
