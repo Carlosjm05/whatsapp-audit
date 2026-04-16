@@ -5,16 +5,14 @@ TRANSCRIBER — Pipeline de transcripción de audios con Whisper
 """
 
 import os
-import sys
 import json
-import time
 import uuid
 import logging
 import argparse
 from pathlib import Path
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import openai
 import psycopg2
 import psycopg2.extras
 from openai import OpenAI
@@ -40,6 +38,8 @@ NUM_WORKERS = int(os.getenv('TRANSCRIBER_WORKERS', os.getenv('NUM_WORKERS', '3')
 MAX_RETRIES = int(os.getenv('MAX_RETRIES', '3'))
 CONFIDENCE_THRESHOLD = float(os.getenv('CONFIDENCE_THRESHOLD', '0.80'))
 DATA_DIR = os.getenv('DATA_DIR', './data')
+WHISPER_TIMEOUT_SECONDS = float(os.getenv('WHISPER_TIMEOUT_SECONDS', '120'))
+MAX_AUDIO_BYTES = 25 * 1024 * 1024  # Whisper rechaza >25MB
 
 
 def get_db_connection():
@@ -53,10 +53,28 @@ def get_openai_client():
 
 
 # ─── TRANSCRIPCIÓN DE UN AUDIO ───────────────────────────────
+# AudioTooLargeError y AudioInvalidError NO son retriables (el audio
+# no va a cambiar de tamaño/existencia reintentando). Solo reintentamos
+# errores transitorios de red/API.
+class AudioTooLargeError(Exception):
+    """Audio excede el límite de Whisper (25MB)."""
+
+
+class AudioInvalidError(Exception):
+    """Audio vacío, no encontrado o corrupto."""
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=4, max=60),
-    retry=retry_if_exception_type((Exception,)),
+    # Solo errores recuperables. Antes se reintentaba Exception (incluyendo
+    # FileNotFoundError, ValueError, etc.) desperdiciando cuota y llamadas.
+    retry=retry_if_exception_type((
+        openai.APIConnectionError,
+        openai.APITimeoutError,
+        openai.RateLimitError,
+        openai.InternalServerError,
+    )),
     before_sleep=lambda retry_state: logger.warning(
         f"  Reintento {retry_state.attempt_number}/3 para transcripción..."
     )
@@ -64,25 +82,28 @@ def get_openai_client():
 def transcribe_audio(client, audio_path):
     """Transcribir un archivo de audio con Whisper."""
     file_path = Path(audio_path)
-    
+
     if not file_path.exists():
-        raise FileNotFoundError(f"Audio no encontrado: {audio_path}")
-    
+        raise AudioInvalidError(f"Audio no encontrado: {audio_path}")
+
     file_size = file_path.stat().st_size
     if file_size == 0:
-        raise ValueError(f"Audio vacío: {audio_path}")
-    
-    # Whisper acepta máximo 25MB
-    if file_size > 25 * 1024 * 1024:
-        logger.warning(f"  Audio muy grande ({file_size / 1024 / 1024:.1f}MB), puede fallar")
-    
+        raise AudioInvalidError(f"Audio vacío: {audio_path}")
+
+    # Whisper rechaza >25MB. No enviamos — ahorra cuota y tiempo.
+    if file_size > MAX_AUDIO_BYTES:
+        raise AudioTooLargeError(
+            f"Audio {file_size / 1024 / 1024:.1f}MB excede limite de 25MB"
+        )
+
     with open(audio_path, 'rb') as audio_file:
         response = client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
             language="es",
             response_format="verbose_json",
-            timestamp_granularities=["segment"]
+            timestamp_granularities=["segment"],
+            timeout=WHISPER_TIMEOUT_SECONDS,
         )
     
     # Calcular score de confianza promedio.
@@ -181,9 +202,27 @@ def process_single_transcription(task):
         
         return {'success': True, 'cost': result['cost_usd'], 'duration': result['duration']}
         
+    except (AudioTooLargeError, AudioInvalidError) as e:
+        # NO retriable: el audio no va a cambiar reintentando.
+        logger.warning(f"  ⏭️  Audio saltado {audio_path}: {e}")
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE transcriptions SET
+                        status = 'skipped',
+                        error_message = %s,
+                        processed_at = NOW()
+                    WHERE id = %s
+                """, (str(e)[:500], transcription_id))
+                conn.commit()
+            except Exception as update_err:
+                logger.error(f"  Error marcando skipped: {update_err}")
+        return {'success': False, 'error': str(e), 'skipped': True}
+
     except Exception as e:
         logger.error(f"  ❌ Error transcribiendo {audio_path}: {str(e)}")
-        
+
         if conn:
             try:
                 cur = conn.cursor()
@@ -195,11 +234,11 @@ def process_single_transcription(task):
                     WHERE id = %s
                 """, (str(e)[:500], transcription_id))
                 conn.commit()
-            except:
-                pass
-        
+            except Exception as update_err:
+                logger.error(f"  Error marcando failed: {update_err}")
+
         return {'success': False, 'error': str(e)}
-    
+
     finally:
         if conn:
             conn.close()
@@ -391,17 +430,25 @@ def generate_unified_transcripts():
 # ─── MAIN ────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', default='transcribe',
-                        choices=['transcribe', 'unify', 'stats', 'full'])
+    # Aceptamos nombres en español y (por retrocompat) los viejos en inglés.
+    parser.add_argument('--mode', default='transcribir',
+                        choices=['transcribir', 'unificar', 'stats', 'completo',
+                                 # aliases en inglés (legacy):
+                                 'transcribe', 'unify', 'full'])
     args = parser.parse_args()
-    
+
+    # Normalizar alias legacy → español
+    _mode_aliases = {'transcribe': 'transcribir', 'unify': 'unificar',
+                     'full': 'completo'}
+    mode = _mode_aliases.get(args.mode, args.mode)
+
     logger.info("══════════════════════════════════════════════")
     logger.info("  WHATSAPP AUDIT — TRANSCRIBER")
-    logger.info(f"  Modo: {args.mode.upper()}")
+    logger.info(f"  Modo: {mode.upper()}")
     logger.info(f"  Workers: {NUM_WORKERS}")
     logger.info("══════════════════════════════════════════════")
-    
-    if args.mode in ('transcribe', 'full'):
+
+    if mode in ('transcribir', 'completo'):
         # Registrar audios pendientes
         register_pending_audios()
         
@@ -442,10 +489,10 @@ def main():
             logger.info(f"   Costo total: ${total_cost:.4f} USD")
             logger.info("══════════════════════════════════════════════")
     
-    if args.mode in ('unify', 'full'):
+    if mode in ('unificar', 'completo'):
         generate_unified_transcripts()
-    
-    if args.mode == 'stats':
+
+    if mode == 'stats':
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
