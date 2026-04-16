@@ -69,3 +69,95 @@ def export_knowledge_base(_user: str = Depends(get_current_user)) -> Dict[str, A
         "entry_types": {k: len(v) for k, v in grouped.items()},
         "data": grouped,
     }
+
+
+@router.get("/dapta-export")
+def dapta_export(_user: str = Depends(get_current_user)) -> Dict[str, Any]:
+    """Exporta la base de conocimiento en el formato estructurado que
+    Dapta espera: preguntas_frecuentes, objeciones, señales_de_compra,
+    señales_de_perdida, info_proyectos, respuestas_ideales."""
+    kb_rows = fetch_all(
+        """SELECT entry_type, category, content_text, verbatim_examples,
+                  frequency_count, ideal_response, related_project
+             FROM dapta_knowledge_base
+             ORDER BY entry_type, frequency_count DESC NULLS LAST"""
+    )
+
+    out: Dict[str, List[Dict[str, Any]]] = {
+        "preguntas_frecuentes": [],
+        "objeciones": [],
+        "senales_de_compra": [],
+        "senales_de_perdida": [],
+        "info_proyectos": [],
+        "respuestas_ideales": [],
+    }
+
+    key_map = {
+        "pregunta_frecuente": "preguntas_frecuentes",
+        "objecion_comun": "objeciones",
+        "senal_compra": "senales_de_compra",
+        "senal_abandono": "senales_de_perdida",
+        "info_proyecto": "info_proyectos",
+        "respuesta_ideal": "respuestas_ideales",
+    }
+
+    for r in kb_rows:
+        bucket = key_map.get(r["entry_type"])
+        if not bucket:
+            continue
+        out[bucket].append({
+            "tema": r.get("category"),
+            "contenido": r.get("content_text"),
+            "ejemplos_verbatim": r.get("verbatim_examples") or [],
+            "frecuencia": r.get("frequency_count") or 0,
+            "respuesta_sugerida": r.get("ideal_response"),
+            "proyecto_relacionado": r.get("related_project"),
+        })
+
+    # Enriquecer respuestas ejemplares con las de asesores top (score >= 8)
+    # para cada objeción: buscar respuestas reales de conversaciones con
+    # alto overall_score.
+    top_advisor_responses = fetch_all(
+        """
+        SELECT lo.objection_type, lo.objection_text, lo.advisor_response,
+               asc_.advisor_name, asc_.overall_score
+          FROM lead_objections lo
+          JOIN advisor_scores asc_ ON asc_.lead_id = lo.lead_id
+         WHERE lo.was_resolved = true
+           AND asc_.overall_score >= 8
+           AND lo.advisor_response IS NOT NULL
+         ORDER BY asc_.overall_score DESC
+         LIMIT 200
+        """
+    )
+
+    by_type: Dict[str, List[Dict[str, Any]]] = {}
+    for r in top_advisor_responses:
+        by_type.setdefault(r["objection_type"] or "otro", []).append({
+            "objecion": r["objection_text"],
+            "respuesta_asesor": r["advisor_response"],
+            "asesor": r["advisor_name"],
+            "score_asesor": float(r["overall_score"]) if r["overall_score"] is not None else None,
+        })
+
+    # Anexar top_responses_by_type en cada objeción
+    for o in out["objeciones"]:
+        t = o.get("tema")
+        if t and t in by_type:
+            o["respuestas_ejemplares"] = by_type[t][:5]
+
+    return {
+        "cliente": "Ortiz Finca Raiz",
+        "generado_en": None,  # fill on frontend display
+        "estadisticas": {
+            "total_entradas": len(kb_rows),
+            "preguntas_frecuentes": len(out["preguntas_frecuentes"]),
+            "objeciones": len(out["objeciones"]),
+            "senales_de_compra": len(out["senales_de_compra"]),
+            "senales_de_perdida": len(out["senales_de_perdida"]),
+            "info_proyectos": len(out["info_proyectos"]),
+            "respuestas_ideales": len(out["respuestas_ideales"]),
+            "respuestas_asesores_top": sum(len(v) for v in by_type.values()),
+        },
+        **out,
+    }

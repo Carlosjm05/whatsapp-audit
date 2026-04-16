@@ -20,6 +20,7 @@ from .routers import (
     leads,
     overview,
     product_intel,
+    trends,
 )
 from .schemas import HealthResponse
 
@@ -75,6 +76,7 @@ app.include_router(errors_router.router)
 app.include_router(competitors.router)
 app.include_router(knowledge_base.router)
 app.include_router(export.router)
+app.include_router(trends.router)
 
 
 # --- Health ---
