@@ -170,20 +170,26 @@ async function runStatsMode(db) {
 }
 
 // ─── MODO: EXTRACCIÓN COMPLETA ──────────────────────────────
-async function runExtractMode(client, db) {
+async function runExtractMode(client, db, options = {}) {
     logger.info('🚀 MODO EXTRACCIÓN — Iniciando proceso completo...');
-    
+
     const extractor = new Extractor(client, db, CONFIG);
-    
+
     // Registrar la corrida en la BD
     const runId = await db.createExtractionRun();
-    
+
     try {
         // Obtener todos los chats individuales (no grupos)
         const allChats = await getChatsWithRetry(client);
-        const chats = allChats.filter(c => !c.isGroup);
-        
+        let chats = allChats.filter(c => !c.isGroup);
+
         logger.info(`Total de chats individuales encontrados: ${chats.length}`);
+
+        // --limit=N: solo los primeros N chats individuales
+        if (options.limit && options.limit > 0 && options.limit < chats.length) {
+            logger.info(`⚙️  --limit=${options.limit} aplicado: extrayendo solo los primeros ${options.limit} chats`);
+            chats = chats.slice(0, options.limit);
+        }
         
         await db.updateExtractionRun(runId, { total_chats: chats.length, status: 'running' });
         
@@ -311,10 +317,16 @@ async function main() {
     
     const args = parseArgs();
     const mode = args.mode || 'extract';
-    
+    const limit = args.limit ? parseInt(args.limit, 10) : null;
+    if (args.limit && (!Number.isFinite(limit) || limit <= 0)) {
+        logger.error(`Valor inválido para --limit: ${args.limit}`);
+        process.exit(1);
+    }
+
     logger.info('══════════════════════════════════════════════');
     logger.info('  WHATSAPP AUDIT SYSTEM — EXTRACTOR');
     logger.info(`  Modo: ${mode.toUpperCase()}`);
+    if (limit) logger.info(`  Límite: ${limit} chats`);
     logger.info('══════════════════════════════════════════════');
     
     // Conectar a base de datos
@@ -364,7 +376,7 @@ async function main() {
             await runTestMode(client);
             break;
         case 'extract':
-            await runExtractMode(client, db);
+            await runExtractMode(client, db, { limit });
             break;
         default:
             logger.error(`Modo desconocido: ${mode}`);
