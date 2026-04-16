@@ -16,8 +16,8 @@ const { downloadMediaMessage } = baileys;
 const logger = createLogger('extractor');
 
 const MEDIA_TYPES = new Set(['audio', 'image', 'video', 'document']);
-const MEDIA_CONCURRENCY = 5;
-const MEDIA_RETRY_DELAY_MS = 2000;
+const MEDIA_CONCURRENCY = parseInt(process.env.MEDIA_CONCURRENCY || '5', 10);
+const MEDIA_RETRY_DELAY_MS = parseInt(process.env.MEDIA_RETRY_DELAY_MS || '2000', 10);
 
 class Extractor {
     constructor(sock, db, config) {
@@ -236,11 +236,25 @@ class Extractor {
 
     // Descarga un media sin lanzar excepción. Retorna null en fallo.
     // 1 reintento con 2s, llama updateMediaMessage para refrescar URLs.
+    // Si detecta rate-limit (429), hace pausa defensiva para bajar la
+    // probabilidad de ban — esos defaults no son cosméticos.
     async _safeDownloadMedia(msg, jid, mediaType) {
         try {
             return await this.downloadMedia(msg, jid, mediaType);
         } catch (error) {
-            logger.warn(`  ⚠️  Media ${msg.key?.id} falló definitivamente: ${error.message}`);
+            const message = String(error?.message || '');
+            const isRateLimit =
+                message.includes('429') ||
+                message.toLowerCase().includes('rate') ||
+                message.toLowerCase().includes('too many');
+            if (isRateLimit) {
+                logger.error(
+                    `  🚨 Posible rate-limit detectado (${message}). Pausando 60s para evitar ban.`
+                );
+                await sleep(60000);
+            } else {
+                logger.warn(`  ⚠️  Media ${msg.key?.id} falló: ${error.message}`);
+            }
             return null;
         }
     }

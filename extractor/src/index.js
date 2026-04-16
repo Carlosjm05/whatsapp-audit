@@ -7,7 +7,7 @@ const qrcode = require('qrcode-terminal');
 const { createLogger } = require('./logger');
 const { Database } = require('./database');
 const { Extractor } = require('./extractor');
-const { sleep, parseArgs } = require('./utils');
+const { sleep, parseArgs, randomBetween } = require('./utils');
 
 // Baileys — manejar ambos estilos de export (default vs named)
 const baileys = require('@whiskeysockets/baileys');
@@ -99,7 +99,7 @@ function describeDisconnect(statusCode) {
 // Resuelve con: 'open', 'restart' (515), 'loggedout', 'retry' u 'timeout'
 function waitForConnectionOutcome(socket) {
     return new Promise((resolve) => {
-        const timeout = setTimeout(() => resolve('timeout'), 180000);
+        const timeout = setTimeout(() => resolve('timeout'), SYNC_TIMEOUT_MS);
         let resolved = false;
         const done = (outcome) => {
             if (resolved) return;
@@ -473,8 +473,17 @@ async function runExtractMode(options = {}) {
                     logger.error('⚠️  Demasiados errores. Pausando 60s...');
                     await sleep(60000);
                 }
+            } finally {
+                // Liberar memoria: con ~12k chats y miles de msgs cada uno,
+                // mantener syncedMessages completo en memoria es GB. Cada
+                // chat ya se persistió a DB; no necesitamos sus mensajes.
+                syncedMessages.delete(chat.jid);
+                chat.messages = null;
             }
         }
+
+        // Al terminar el loop, liberar lo que quedó de estructuras auxiliares.
+        syncedMessages.clear();
 
         await db.updateExtractionRun(runId, {
             status: isShuttingDown ? 'paused' : 'completed',
@@ -495,11 +504,6 @@ async function runExtractMode(options = {}) {
         await db.updateExtractionRun(runId, { status: 'failed', error_log: error.message });
         throw error;
     }
-}
-
-// ─── UTILIDADES ─────────────────────────────────────────────
-function randomBetween(min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 // ─── SHUTDOWN GRACEFUL ──────────────────────────────────────
@@ -524,19 +528,28 @@ function setupGracefulShutdown() {
         }
 
         logger.info('✅ Shutdown limpio completado.');
-        process.exit(0);
     };
 
-    process.on('SIGINT', () => shutdown('SIGINT'));
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    const runShutdown = async (signal, exitCode = 0) => {
+        await shutdown(signal);
+        process.exit(exitCode);
+    };
+
+    process.on('SIGINT', () => runShutdown('SIGINT', 0));
+    process.on('SIGTERM', () => runShutdown('SIGTERM', 0));
     process.on('uncaughtException', async (error) => {
         logger.error(`Excepción no capturada: ${error.message}`);
         logger.error(error.stack);
-        await shutdown('uncaughtException');
+        // Exit code 1 — los supervisores (systemd/docker) deben detectar
+        // el fallo. Antes salía con 0 y ocultaba errores reales.
+        await runShutdown('uncaughtException', 1);
     });
     process.on('unhandledRejection', async (reason) => {
-        logger.error(`Promise rechazada: ${reason}`);
-        await shutdown('unhandledRejection');
+        const msg = reason instanceof Error
+            ? `${reason.message}\n${reason.stack}`
+            : String(reason);
+        logger.error(`Promise rechazada sin manejar: ${msg}`);
+        await runShutdown('unhandledRejection', 1);
     });
 }
 

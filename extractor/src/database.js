@@ -254,16 +254,6 @@ class Database {
         );
     }
 
-    // ─── TRANSCRIPTIONS ─────────────────────────────────────
-    async createPendingTranscription(messageId, conversationId, audioDuration) {
-        await this.pool.query(
-            `INSERT INTO transcriptions (id, message_id, conversation_id, audio_duration_sec, status)
-             VALUES ($1, $2, $3, $4, 'pending')
-             ON CONFLICT DO NOTHING`,
-            [uuidv4(), messageId, conversationId, audioDuration]
-        );
-    }
-
     // ─── STATISTICS ─────────────────────────────────────────
     async getExtractionStats() {
         const result = await this.pool.query(`

@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════
-// UTILITIES
+// Utilidades
 // ══════════════════════════════════════════════════════════════
 
 function sleep(ms) {
@@ -12,9 +12,7 @@ function sanitizeFilename(str) {
 
 function formatPhone(phone) {
     if (!phone) return null;
-    // Limpiar el número
     let clean = phone.replace(/[^0-9+]/g, '');
-    // Agregar + si no tiene
     if (!clean.startsWith('+') && clean.length > 10) {
         clean = '+' + clean;
     }
@@ -32,22 +30,8 @@ function parseArgs() {
     return args;
 }
 
-function formatBytes(bytes) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+function randomBetween(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-function formatDuration(seconds) {
-    if (!seconds) return '0s';
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = Math.floor(seconds % 60);
-    if (h > 0) return `${h}h ${m}m ${s}s`;
-    if (m > 0) return `${m}m ${s}s`;
-    return `${s}s`;
-}
-
-module.exports = { sleep, sanitizeFilename, formatPhone, parseArgs, formatBytes, formatDuration };
+module.exports = { sleep, sanitizeFilename, formatPhone, parseArgs, randomBetween };

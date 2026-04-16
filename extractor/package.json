@@ -4,7 +4,6 @@
   "description": "WhatsApp conversation extractor for Ortiz Finca Raíz audit (Baileys)",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
     "extract": "node src/index.js --mode=extract",
     "test-connection": "node src/index.js --mode=test",
     "stats": "node src/index.js --mode=stats"
