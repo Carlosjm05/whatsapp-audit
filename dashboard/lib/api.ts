@@ -1,5 +1,11 @@
 import { getToken, logout } from './auth';
 
+// La API puede devolver null, undefined o un tipo inesperado para
+// campos que el dashboard espera como array. Garantiza siempre [].
+export function safeArray<T>(val: unknown): T[] {
+  return Array.isArray(val) ? val : [];
+}
+
 // Vacío por defecto = URLs relativas. En producción nginx enruta
 // /api/* y /auth/* al backend. Solo se necesita NEXT_PUBLIC_API_URL
 // en desarrollo local sin nginx (e.g. "http://localhost:8000").

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { fetchApi } from '@/lib/api';
+import { fetchApi, safeArray } from '@/lib/api';
 import type { ErrorsIntel } from '@/types/api';
 import PageHeader from '@/components/PageHeader';
 import KpiCard from '@/components/KpiCard';
@@ -32,12 +32,9 @@ export default function ErrorsPage() {
     };
   }, []);
 
-  const totalFollowup =
-    (data?.followupStats.withFollowup ?? 0) +
-    (data?.followupStats.withoutFollowup ?? 0);
-  const followupPct = totalFollowup
-    ? (data?.followupStats.withFollowup ?? 0) / totalFollowup
-    : 0;
+  const fs = data?.followupStats;
+  const totalFollowup = (fs?.withFollowup ?? 0) + (fs?.withoutFollowup ?? 0);
+  const followupPct = totalFollowup ? (fs?.withFollowup ?? 0) / totalFollowup : 0;
 
   return (
     <div>
@@ -54,25 +51,25 @@ export default function ErrorsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
             <KpiCard
               label="Con seguimiento"
-              value={formatNumber(data.followupStats.withFollowup)}
+              value={formatNumber(fs?.withFollowup ?? 0)}
               sub={`${formatPct(followupPct, 1)} del total`}
               icon={<MessageSquareDashed className="w-5 h-5" />}
               tone="positive"
             />
             <KpiCard
               label="Sin seguimiento"
-              value={formatNumber(data.followupStats.withoutFollowup)}
+              value={formatNumber(fs?.withoutFollowup ?? 0)}
               icon={<AlertTriangle className="w-5 h-5" />}
               tone="warning"
             />
             <KpiCard
               label="Promedio de seguimientos"
-              value={formatNumber(Math.round(data.followupStats.avgFollowups))}
+              value={formatNumber(Math.round(fs?.avgFollowups ?? 0))}
               icon={<Clock className="w-5 h-5" />}
             />
             <KpiCard
               label="Perdidos por no seguimiento"
-              value={formatNumber(data.followupStats.lostDueToNoFollowup)}
+              value={formatNumber(fs?.lostDueToNoFollowup ?? 0)}
               icon={<Flame className="w-5 h-5" />}
               tone="danger"
             />
@@ -84,7 +81,7 @@ export default function ErrorsPage() {
               subtitle="Conteo por tipo de error"
             >
               <ChartBar
-                data={data.topErrors || []}
+                data={safeArray(data.topErrors)}
                 xKey="type"
                 yKey="count"
                 color="#ef4444"
@@ -96,7 +93,7 @@ export default function ErrorsPage() {
               subtitle="Minutos entre mensaje del cliente y respuesta"
             >
               <ChartBar
-                data={data.responseTimeHistogram || []}
+                data={safeArray(data.responseTimeHistogram)}
                 xKey="bucket"
                 yKey="count"
                 color="#f59e0b"

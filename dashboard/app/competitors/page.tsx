@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { fetchApi } from '@/lib/api';
+import { fetchApi, safeArray } from '@/lib/api';
 import type { CompetitorsIntel, CompetitorMention } from '@/types/api';
 import PageHeader from '@/components/PageHeader';
 import DataTable, { Column } from '@/components/DataTable';
@@ -64,7 +64,7 @@ export default function CompetitorsPage() {
           <div className="mb-6">
             <DataTable
               columns={columns}
-              rows={data.topCompetitors || []}
+              rows={safeArray<CompetitorMention>(data.topCompetitors)}
               initialSortKey="mentions"
               initialSortDir="desc"
               empty="Sin menciones a competidores."
@@ -73,7 +73,7 @@ export default function CompetitorsPage() {
 
           <ChartCard title="Razones de pérdida" subtitle="Motivos identificados">
             <ChartBar
-              data={data.lossReasons || []}
+              data={safeArray(data.lossReasons)}
               xKey="reason"
               yKey="count"
               color="#ef4444"

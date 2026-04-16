@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { fetchApi } from '@/lib/api';
-import type { OverviewResponse } from '@/types/api';
+import { fetchApi, safeArray } from '@/lib/api';
+import type { OverviewResponse, FunnelStage, StatusBucket, MonthlyVolume } from '@/types/api';
 import KpiCard from '@/components/KpiCard';
 import PageHeader from '@/components/PageHeader';
 import {
@@ -55,42 +55,54 @@ export default function OverviewPage() {
       {loading && <KpiSkeletonGrid count={6} />}
       {error && <ErrorState message={error} />}
 
-      {!loading && !error && data && (
-        <>
+      {!loading && !error && data && (() => {
+        // El API puede devolver funnel como objeto {contactado, calificado,
+        // visita, venta} en vez del array que los Charts esperan. Convertir.
+        const funnelRaw = data.funnel;
+        const funnel: FunnelStage[] = Array.isArray(funnelRaw)
+          ? funnelRaw
+          : funnelRaw && typeof funnelRaw === 'object'
+            ? Object.entries(funnelRaw)
+                .filter(([, v]) => typeof v === 'number')
+                .map(([stage, count]) => ({ stage, count: count as number }))
+            : [];
+        const statusDist = safeArray<StatusBucket>(data.statusDistribution);
+        const monthly = safeArray<MonthlyVolume>(data.monthlyVolume);
+        return <>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             <KpiCard
               label="Conversaciones analizadas"
-              value={formatNumber(data.totalConversations)}
+              value={formatNumber(data.totalConversations ?? 0)}
               icon={<MessageSquare className="w-5 h-5" />}
             />
             <KpiCard
               label="Leads identificados"
-              value={formatNumber(data.totalLeads)}
+              value={formatNumber(data.totalLeads ?? 0)}
               icon={<Users className="w-5 h-5" />}
               tone="positive"
             />
             <KpiCard
               label="Leads recuperables"
-              value={formatNumber(data.recoverableCount)}
+              value={formatNumber(data.recoverableCount ?? 0)}
               sub="Oportunidades activas a retomar"
               icon={<TrendingUp className="w-5 h-5" />}
               tone="warning"
             />
             <KpiCard
               label="Valor estimado recuperable"
-              value={formatCOP(data.totalRecoverableEstimatedValue)}
+              value={formatCOP(data.totalRecoverableEstimatedValue ?? 0)}
               icon={<PiggyBank className="w-5 h-5" />}
               tone="positive"
             />
             <KpiCard
               label="Intención promedio"
-              value={formatPct(data.avgIntentScore, 1)}
+              value={formatPct(data.avgIntentScore ?? 0, 1)}
               sub="Score 0-100 de intención de compra"
               icon={<Sparkles className="w-5 h-5" />}
             />
             <KpiCard
               label="Score promedio asesor"
-              value={formatPct(data.avgAdvisorScore, 1)}
+              value={formatPct(data.avgAdvisorScore ?? 0, 1)}
               sub="Calidad ponderada de atención"
               icon={<UserCheck className="w-5 h-5" />}
             />
@@ -102,7 +114,7 @@ export default function OverviewPage() {
               subtitle="Progreso de conversaciones por etapa comercial"
             >
               <ChartFunnel
-                data={data.funnel || []}
+                data={funnel}
                 nameKey="stage"
                 valueKey="count"
               />
@@ -113,7 +125,7 @@ export default function OverviewPage() {
               subtitle="Estados actuales del pipeline"
             >
               <ChartPie
-                data={data.statusDistribution || []}
+                data={statusDist}
                 nameKey="status"
                 valueKey="count"
               />
@@ -127,7 +139,7 @@ export default function OverviewPage() {
               height={300}
             >
               <ChartLine
-                data={data.monthlyVolume || []}
+                data={monthly}
                 xKey="month"
                 yKey="count"
               />
@@ -141,15 +153,15 @@ export default function OverviewPage() {
               height={280}
             >
               <ChartBar
-                data={data.statusDistribution || []}
+                data={statusDist}
                 xKey="status"
                 yKey="count"
                 color="#2563eb"
               />
             </ChartCard>
           </div>
-        </>
-      )}
+        </>;
+      })()}
     </div>
   );
 }

@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { fetchApi } from '@/lib/api';
-import type { ProductIntel, ProjectConversions } from '@/types/api';
+import { fetchApi, safeArray } from '@/lib/api';
+import type { ProductIntel, ProjectConversions, ZoneCount } from '@/types/api';
 import PageHeader from '@/components/PageHeader';
 import { ChartCard, ChartBar, ChartPie } from '@/components/Charts';
 import { ErrorState } from '@/components/LoadingState';
@@ -75,7 +75,7 @@ export default function ProductIntelPage() {
               subtitle="Rango de precios de interés"
             >
               <ChartBar
-                data={data.budgetDistribution || []}
+                data={safeArray(data.budgetDistribution)}
                 xKey="range"
                 yKey="count"
                 color="#2563eb"
@@ -86,7 +86,7 @@ export default function ProductIntelPage() {
               subtitle="Top zonas por interés"
             >
               <ChartBar
-                data={(data.topZones || []).slice(0, 10)}
+                data={safeArray<ZoneCount>(data.topZones).slice(0, 10)}
                 xKey="zone"
                 yKey="count"
                 color="#10b981"
@@ -98,7 +98,7 @@ export default function ProductIntelPage() {
               subtitle="Preferencias por número de habitaciones"
             >
               <ChartPie
-                data={data.bedroomsDemand || []}
+                data={safeArray(data.bedroomsDemand)}
                 nameKey="bedrooms"
                 valueKey="count"
               />
@@ -108,7 +108,7 @@ export default function ProductIntelPage() {
               subtitle="Distribución por tipología"
             >
               <ChartPie
-                data={data.propertyTypes || []}
+                data={safeArray(data.propertyTypes)}
                 nameKey="type"
                 valueKey="count"
               />
@@ -121,7 +121,7 @@ export default function ProductIntelPage() {
             </h3>
             <DataTable
               columns={projectColumns}
-              rows={data.topProjects || []}
+              rows={safeArray<ProjectConversions>(data.topProjects)}
               initialSortKey="leads"
               initialSortDir="desc"
               empty="Sin datos de proyectos."
