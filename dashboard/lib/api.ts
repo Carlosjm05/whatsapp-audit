@@ -1,7 +1,10 @@
 import { getToken, logout } from './auth';
 
+// Vacío por defecto = URLs relativas. En producción nginx enruta
+// /api/* y /auth/* al backend. Solo se necesita NEXT_PUBLIC_API_URL
+// en desarrollo local sin nginx (e.g. "http://localhost:8000").
 export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+  process.env.NEXT_PUBLIC_API_URL || '';
 
 export class ApiError extends Error {
   status: number;
