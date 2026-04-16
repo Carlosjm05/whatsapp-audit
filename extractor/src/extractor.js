@@ -129,25 +129,60 @@ class Extractor {
     }
 
     // ─── OBTENER TODOS LOS MENSAJES DE UN CHAT ─────────────
+    // whatsapp-web.js internamente llama loadEarlierMsgs() hasta alcanzar
+    // el `limit` o agotar el historial. `Infinity` a veces hace timeout del
+    // protocolo; usamos un entero muy grande y reintentamos con backoff.
+    // Además, paginamos hasta que dos iteraciones seguidas devuelvan la
+    // misma cantidad (WA puede seguir sincronizando en background).
     async fetchAllMessages(chat) {
-        // whatsapp-web.js no soporta paginación con `before`; usar `limit: Infinity`
-        // retorna todo el historial cargado en el cliente.
-        let allMessages = [];
-        try {
-            allMessages = await chat.fetchMessages({ limit: Infinity });
-        } catch (error) {
-            logger.warn(`  ⚠️  fetchMessages(Infinity) falló: ${error.message} — intentando con límite grande`);
-            try {
-                allMessages = await chat.fetchMessages({ limit: 100000 });
-            } catch (e2) {
-                logger.warn(`  ⚠️  Fallback también falló: ${e2.message}`);
-                return [];
+        const HARD_LIMIT = 999999;
+        const MAX_ROUNDS = 6;
+        const ROUND_WAIT_MS = 4000;
+
+        // Darle a WhatsApp Web un momento para sincronizar ESTE chat
+        // antes de empezar a pedir historial.
+        await sleep(2000);
+
+        let lastCount = -1;
+        let messages = [];
+
+        for (let round = 1; round <= MAX_ROUNDS; round++) {
+            let attempt = 0;
+            while (attempt < 3) {
+                try {
+                    messages = await chat.fetchMessages({ limit: HARD_LIMIT });
+                    break;
+                } catch (error) {
+                    attempt++;
+                    logger.warn(`  ⚠️  fetchMessages falló (ronda ${round}, intento ${attempt}/3): ${error.message}`);
+                    if (attempt >= 3) {
+                        if (messages.length > 0) {
+                            logger.warn(`  ⚠️  Devolviendo ${messages.length} mensajes cargados antes del fallo`);
+                            return this._sortChronological(messages);
+                        }
+                        return [];
+                    }
+                    await sleep(3000 * attempt);
+                }
             }
+
+            logger.info(`  📜 Ronda ${round}: ${messages.length} mensajes cargados`);
+
+            // Si no crecimos desde la ronda anterior, asumimos historial completo.
+            if (messages.length === lastCount) {
+                break;
+            }
+            lastCount = messages.length;
+
+            // Esperar a que WhatsApp cargue más historial en background.
+            await sleep(ROUND_WAIT_MS);
         }
 
-        // Ordenar cronológicamente (más viejo → más nuevo)
-        allMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-        return allMessages;
+        return this._sortChronological(messages);
+    }
+
+    _sortChronological(messages) {
+        return [...messages].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     }
 
     // ─── PROCESAR UN MENSAJE INDIVIDUAL ─────────────────────
