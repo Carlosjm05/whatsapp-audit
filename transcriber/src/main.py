@@ -36,7 +36,7 @@ DB_CONFIG = {
     'password': os.getenv('POSTGRES_PASSWORD', ''),
 }
 
-NUM_WORKERS = int(os.getenv('NUM_WORKERS', '3'))
+NUM_WORKERS = int(os.getenv('TRANSCRIBER_WORKERS', os.getenv('NUM_WORKERS', '3')))
 MAX_RETRIES = int(os.getenv('MAX_RETRIES', '3'))
 CONFIDENCE_THRESHOLD = float(os.getenv('CONFIDENCE_THRESHOLD', '0.80'))
 DATA_DIR = os.getenv('DATA_DIR', './data')

@@ -13,6 +13,14 @@ export interface Column<T> {
   width?: string;
 }
 
+// Tailwind JIT no detecta clases construidas por interpolación,
+// por eso este mapping explícito.
+const ALIGN_CLASS: Record<'left' | 'right' | 'center', string> = {
+  left: 'text-left',
+  right: 'text-right',
+  center: 'text-center'
+};
+
 interface Props<T> {
   columns: Column<T>[];
   rows: T[];
@@ -81,9 +89,7 @@ export default function DataTable<T extends Record<string, unknown>>({
                 <th
                   key={col.key}
                   style={col.width ? { width: col.width } : undefined}
-                  className={`px-4 py-3 font-medium text-xs uppercase tracking-wide text-${
-                    col.align || 'left'
-                  }`}
+                  className={`px-4 py-3 font-medium text-xs uppercase tracking-wide ${ALIGN_CLASS[col.align || 'left']}`}
                 >
                   {col.sortable ? (
                     <button
@@ -120,7 +126,7 @@ export default function DataTable<T extends Record<string, unknown>>({
                 {columns.map((col) => (
                   <td
                     key={col.key}
-                    className={`px-4 py-3 text-${col.align || 'left'} text-slate-700`}
+                    className={`px-4 py-3 ${ALIGN_CLASS[col.align || 'left']} text-slate-700`}
                   >
                     {col.render ? col.render(row) : (col.accessor(row) as ReactNode) ?? '—'}
                   </td>

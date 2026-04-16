@@ -34,6 +34,9 @@ body {
   .btn-primary {
     @apply btn bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50;
   }
+  .btn-secondary {
+    @apply btn bg-slate-200 text-slate-800 hover:bg-slate-300 disabled:opacity-50;
+  }
   .btn-ghost {
     @apply btn text-slate-700 hover:bg-slate-100;
   }

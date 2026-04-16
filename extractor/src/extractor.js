@@ -324,7 +324,10 @@ class Extractor {
 
         const isFromMe = msg.key?.fromMe || false;
         const sender = isFromMe ? 'asesor' : 'lead';
-        const senderPhone = isFromMe ? 'asesor' : formatPhone(contactNumber);
+        // sender_phone es VARCHAR(20) para números de teléfono. Cuando es el
+        // asesor dejamos NULL en vez de la literal 'asesor' (el flag `sender`
+        // ya comunica de quién viene el mensaje).
+        const senderPhone = isFromMe ? null : formatPhone(contactNumber);
         // sender_name es VARCHAR(255) en el schema — truncar para evitar rollback
         let senderName = msg.pushName || (isFromMe ? 'Asesor' : contactNumber);
         if (senderName && senderName.length > 255) senderName = senderName.substring(0, 255);

@@ -13,7 +13,7 @@ import {
   ChartFunnel
 } from '@/components/Charts';
 import { KpiSkeletonGrid, ErrorState } from '@/components/LoadingState';
-import { formatCOP, formatNumber, formatPct } from '@/lib/format';
+import { formatCOP, formatNumber } from '@/lib/format';
 import {
   MessageSquare,
   Users,
@@ -96,13 +96,13 @@ export default function OverviewPage() {
             />
             <KpiCard
               label="Intención promedio"
-              value={formatPct(data.avgIntentScore ?? 0, 1)}
-              sub="Score 0-100 de intención de compra"
+              value={`${formatNumber(data.avgIntentScore ?? 0, 1)} / 10`}
+              sub="Score 1-10 de intención de compra"
               icon={<Sparkles className="w-5 h-5" />}
             />
             <KpiCard
               label="Score promedio asesor"
-              value={formatPct(data.avgAdvisorScore ?? 0, 1)}
+              value={`${formatNumber(data.avgAdvisorScore ?? 0, 1)} / 10`}
               sub="Calidad ponderada de atención"
               icon={<UserCheck className="w-5 h-5" />}
             />

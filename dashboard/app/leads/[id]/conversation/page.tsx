@@ -3,11 +3,10 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { fetchApi, safeArray, API_URL } from '@/lib/api';
+import { fetchApi, safeArray } from '@/lib/api';
 import type { ConversationResponse, ConversationMessage } from '@/types/api';
 import { ErrorState } from '@/components/LoadingState';
 import { ArrowLeft, Image as ImageIcon, FileText, Mic, Sparkles } from 'lucide-react';
-import { getToken } from '@/lib/auth';
 
 function formatTime(iso?: string): string {
   if (!iso) return '';

@@ -1,10 +1,10 @@
-"""CSV / JSON export of common resources."""
+"""Exportación CSV / JSON de recursos comunes."""
 from __future__ import annotations
 
 import csv
 import io
 import json
-from typing import Any, Dict, Iterable, List
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -15,47 +15,78 @@ from ..db import fetch_all
 router = APIRouter(prefix="/api/export", tags=["export"])
 
 
-# --- Resource SQL registry ---
+# --- SQL builder para recoverable_leads (con filtros) ---
+def _build_recoverable_leads_sql(
+    priority: Optional[str],
+    probability: Optional[str],
+    advisor: Optional[str],
+    search: Optional[str],
+) -> tuple[str, list]:
+    where = ["co.is_recoverable = TRUE"]
+    params: list = []
+    if priority:
+        where.append("co.recovery_priority = %s")
+        params.append(priority)
+    if probability:
+        where.append("co.recovery_probability = %s")
+        params.append(probability)
+    if advisor:
+        where.append("ascr.advisor_name ILIKE %s")
+        params.append(f"%{advisor}%")
+    if search:
+        where.append(
+            "(l.phone ILIKE %s OR l.whatsapp_name ILIKE %s OR l.real_name ILIKE %s)"
+        )
+        like = f"%{search}%"
+        params.extend([like, like, like])
+
+    where_sql = " AND ".join(where)
+    sql = f"""
+        SELECT
+          l.id,
+          l.conversation_id,
+          l.phone,
+          l.whatsapp_name,
+          l.real_name,
+          l.city,
+          l.zone,
+          ascr.advisor_name,
+          co.final_status,
+          co.is_recoverable,
+          co.recovery_probability,
+          co.recovery_priority,
+          co.recovery_strategy,
+          co.recovery_message_suggestion,
+          li.intent_score,
+          li.urgency,
+          lf.budget_estimated_cop,
+          lf.budget_range,
+          lin.product_type,
+          lin.project_name,
+          l.first_contact_at,
+          l.last_contact_at,
+          ascr.overall_score
+        FROM leads l
+        JOIN conversation_outcomes co ON co.lead_id = l.id
+        LEFT JOIN advisor_scores ascr ON ascr.lead_id = l.id
+        LEFT JOIN lead_intent li ON li.lead_id = l.id
+        LEFT JOIN lead_financials lf ON lf.lead_id = l.id
+        LEFT JOIN lead_interests lin ON lin.lead_id = l.id
+        WHERE {where_sql}
+        ORDER BY lf.budget_estimated_cop DESC NULLS LAST
+    """
+    return sql, params
+
+
+# --- Registry de recursos ---
+# La clave canónica usa guion bajo; se acepta también con guion como alias.
 _RESOURCES: Dict[str, Dict[str, Any]] = {
     "recoverable_leads": {
-        "filename": "recoverable_leads",
-        "sql": """
-            SELECT
-              l.id,
-              l.conversation_id,
-              l.phone,
-              l.whatsapp_name,
-              l.real_name,
-              l.city,
-              l.zone,
-              ascr.advisor_name,
-              co.final_status,
-              co.is_recoverable,
-              co.recovery_probability,
-              co.recovery_priority,
-              co.recovery_strategy,
-              co.recovery_message_suggestion,
-              li.intent_score,
-              li.urgency,
-              lf.budget_estimated_cop,
-              lf.budget_range,
-              lin.product_type,
-              lin.project_name,
-              l.first_contact_at,
-              l.last_contact_at,
-              ascr.overall_score
-            FROM leads l
-            JOIN conversation_outcomes co ON co.lead_id = l.id
-            LEFT JOIN advisor_scores ascr ON ascr.lead_id = l.id
-            LEFT JOIN lead_intent li ON li.lead_id = l.id
-            LEFT JOIN lead_financials lf ON lf.lead_id = l.id
-            LEFT JOIN lead_interests lin ON lin.lead_id = l.id
-            WHERE co.is_recoverable = TRUE
-            ORDER BY lf.budget_estimated_cop DESC NULLS LAST
-        """,
+        "filename": "leads_recuperables",
+        "build": _build_recoverable_leads_sql,
     },
     "advisor_scores": {
-        "filename": "advisor_scores",
+        "filename": "puntajes_asesores",
         "sql": """
             SELECT
               ascr.lead_id,
@@ -77,7 +108,7 @@ _RESOURCES: Dict[str, Dict[str, Any]] = {
         """,
     },
     "knowledge_base": {
-        "filename": "knowledge_base",
+        "filename": "base_conocimiento",
         "sql": """
             SELECT id, entry_type, category, content_text, verbatim_examples,
                    frequency_count, ideal_response
@@ -86,6 +117,11 @@ _RESOURCES: Dict[str, Dict[str, Any]] = {
         """,
     },
 }
+
+
+def _normalize_resource_key(resource: str) -> str:
+    """Acepta tanto 'recoverable-leads' como 'recoverable_leads'."""
+    return resource.replace("-", "_").lower()
 
 
 def _json_default(o: Any) -> Any:
@@ -98,7 +134,6 @@ def _stringify_cell(v: Any) -> str:
     if v is None:
         return ""
     if isinstance(v, (list, tuple)):
-        # Join arrays with ` | ` for CSV readability
         return " | ".join(_stringify_cell(x) for x in v)
     if isinstance(v, dict):
         return json.dumps(v, ensure_ascii=False, default=_json_default)
@@ -143,16 +178,28 @@ def _json_stream(rows: List[Dict[str, Any]]) -> Iterable[bytes]:
 def export_resource(
     resource: str,
     format: str = Query("csv", pattern="^(csv|json)$"),
+    priority: Optional[str] = Query(None),
+    probability: Optional[str] = Query(None),
+    advisor: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
     _user: str = Depends(get_current_user),
 ) -> StreamingResponse:
-    spec = _RESOURCES.get(resource)
+    key = _normalize_resource_key(resource)
+    spec = _RESOURCES.get(key)
     if not spec:
         raise HTTPException(
             status_code=404,
-            detail=f"Unknown resource '{resource}'. Allowed: {list(_RESOURCES.keys())}",
+            detail=f"Recurso desconocido '{resource}'. Permitidos: {list(_RESOURCES.keys())}",
         )
 
-    rows = fetch_all(spec["sql"])
+    # Recursos con builder (aceptan filtros) vs. SQL estático
+    if "build" in spec:
+        builder: Callable = spec["build"]
+        sql, params = builder(priority, probability, advisor, search)
+        rows = fetch_all(sql, params)
+    else:
+        rows = fetch_all(spec["sql"])
+
     filename = f"{spec['filename']}.{format}"
 
     if format == "json":

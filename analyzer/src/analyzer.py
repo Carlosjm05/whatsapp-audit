@@ -28,8 +28,8 @@ from .validator import AnalysisOutput
 
 log = logging.getLogger("analyzer")
 
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250929")
-NUM_WORKERS = int(os.getenv("NUM_WORKERS", "2"))
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5")
+NUM_WORKERS = int(os.getenv("ANALYZER_WORKERS", os.getenv("NUM_WORKERS", "2")))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 MIN_WORDS = 20
 

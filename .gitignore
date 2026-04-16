@@ -50,3 +50,4 @@ letsencrypt/
 out/
 build/
 dist/
+.claude/
