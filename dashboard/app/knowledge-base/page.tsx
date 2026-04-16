@@ -7,7 +7,7 @@ import PageHeader from '@/components/PageHeader';
 import DataTable, { Column } from '@/components/DataTable';
 import { ErrorState } from '@/components/LoadingState';
 import { formatDate } from '@/lib/format';
-import { Download, Search } from 'lucide-react';
+import { Download, Search, Sparkles, Eye } from 'lucide-react';
 
 export default function KnowledgeBasePage() {
   const [rows, setRows] = useState<KnowledgeEntry[]>([]);
@@ -16,6 +16,8 @@ export default function KnowledgeBasePage() {
   const [type, setType] = useState('');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<KnowledgeEntry | null>(null);
+  const [daptaPreview, setDaptaPreview] = useState<Record<string, unknown> | null>(null);
+  const [daptaLoading, setDaptaLoading] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -59,6 +61,35 @@ export default function KnowledgeBasePage() {
     }
   }
 
+  async function previewDapta() {
+    setDaptaLoading(true);
+    try {
+      const res = await fetchApi<Record<string, unknown>>(
+        '/api/knowledge-base/dapta-export'
+      );
+      setDaptaPreview(res);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Error generando preview');
+    } finally {
+      setDaptaLoading(false);
+    }
+  }
+
+  function downloadDaptaJson() {
+    if (!daptaPreview) return;
+    const blob = new Blob([JSON.stringify(daptaPreview, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dapta-knowledge-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   const columns: Column<KnowledgeEntry>[] = [
     {
       key: 'entry_type',
@@ -93,9 +124,15 @@ export default function KnowledgeBasePage() {
         title="Base de conocimiento"
         subtitle="Entradas extraídas listas para exportar a Dapta."
         actions={
-          <button onClick={onExport} className="btn-outline">
-            <Download className="w-4 h-4" /> Exportar JSON
-          </button>
+          <div className="flex gap-2">
+            <button onClick={previewDapta} className="btn-primary text-xs" disabled={daptaLoading}>
+              <Sparkles className="w-4 h-4" />
+              {daptaLoading ? 'Generando...' : 'Exportar para Dapta'}
+            </button>
+            <button onClick={onExport} className="btn-outline text-xs">
+              <Download className="w-4 h-4" /> JSON crudo
+            </button>
+          </div>
         }
       />
 
@@ -188,6 +225,52 @@ export default function KnowledgeBasePage() {
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dapta export preview modal */}
+      {daptaPreview && (
+        <div
+          className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4"
+          onClick={() => setDaptaPreview(null)}
+        >
+          <div
+            className="bg-white rounded-xl max-w-5xl w-full max-h-[90vh] overflow-hidden shadow-xl flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-5 border-b border-slate-200 flex items-start justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-brand-600" />
+                  <h3 className="text-lg font-semibold text-slate-900">
+                    Base de conocimiento — formato Dapta
+                  </h3>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                  {daptaPreview.estadisticas && typeof daptaPreview.estadisticas === 'object'
+                    ? Object.entries(daptaPreview.estadisticas as Record<string, unknown>).map(([k, v]) => (
+                        <span key={k} className="badge bg-slate-100 text-slate-700">
+                          {k.replace(/_/g, ' ')}: <strong className="ml-1">{String(v)}</strong>
+                        </span>
+                      ))
+                    : null}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={downloadDaptaJson} className="btn-primary text-xs">
+                  <Download className="w-4 h-4" /> Descargar
+                </button>
+                <button onClick={() => setDaptaPreview(null)} className="btn-ghost text-xs">
+                  Cerrar
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto p-4 bg-slate-50">
+              <pre className="text-xs text-slate-800 whitespace-pre-wrap break-words">
+                {JSON.stringify(daptaPreview, null, 2)}
+              </pre>
             </div>
           </div>
         </div>
