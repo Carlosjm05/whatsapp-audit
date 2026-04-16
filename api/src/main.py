@@ -1,4 +1,4 @@
-"""FastAPI application entrypoint for Ortiz Finca Raiz WhatsApp audit API."""
+"""Punto de entrada FastAPI para el API de auditoría de WhatsApp."""
 from __future__ import annotations
 
 import logging
@@ -7,10 +7,13 @@ from contextlib import asynccontextmanager
 import redis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from . import auth as auth_module
 from . import db as db_module
 from .config import get_settings
+from .ratelimit import limiter
 from .routers import (
     advisors,
     competitors,
@@ -39,9 +42,9 @@ async def lifespan(app: FastAPI):
     log = logging.getLogger("wa_api")
     try:
         db_module.init_pool()
-        log.info("DB pool ready")
+        log.info("Pool de DB listo")
     except Exception as e:
-        log.error("Failed to init DB pool at startup: %s", e)
+        log.error("Fallo al iniciar pool de DB: %s", e)
     yield
     try:
         db_module.close_pool()
@@ -50,19 +53,25 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Ortiz Finca Raiz - WhatsApp Audit API",
+    title="Ortiz Finca Raíz — API de auditoría WhatsApp",
     version="1.0.0",
     lifespan=lifespan,
 )
 
 _settings = get_settings()
 
+# Rate limiting (aplicado selectivamente a endpoints sensibles; ver auth.py).
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CORS: cerrado al dominio configurado (y extras explícitos). En dev con
+# DOMAIN vacío acepta localhost:3000.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -97,6 +106,8 @@ def _redis_ping() -> bool:
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
 def health() -> HealthResponse:
+    # El health detallado se expone solo a quien llega al puerto interno
+    # del contenedor (nginx no proxya /health a internet por defecto).
     return HealthResponse(
         status="ok",
         db="ok" if db_module.ping() else "down",
@@ -108,7 +119,7 @@ def health() -> HealthResponse:
 def root() -> dict:
     return {
         "service": "wa_api",
-        "client": "Ortiz Finca Raiz",
+        "client": "Ortiz Finca Raíz",
         "docs": "/docs",
         "health": "/health",
     }

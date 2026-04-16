@@ -1,22 +1,23 @@
-"""JWT authentication for the audit API (single-user)."""
+"""Autenticación JWT (admin único) para el API de auditoría."""
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
 
 from .config import get_settings
+from .ratelimit import limiter
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# tokenUrl is informational; we accept JSON login bodies, not form-urlencoded.
+# tokenUrl es informativo; aceptamos bodies JSON, no form-urlencoded.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 
@@ -49,32 +50,37 @@ def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> str:
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authorization token",
+            detail="Token de autorización faltante",
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
         payload = decode_token(token)
         sub = payload.get("sub")
         if not sub:
-            raise JWTError("missing sub")
+            raise JWTError("falta 'sub'")
         return str(sub)
     except JWTError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {e}",
+            detail=f"Token inválido: {e}",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(body: LoginRequest) -> TokenResponse:
+@limiter.limit("5/minute")
+def login(request: Request, body: LoginRequest) -> TokenResponse:
+    """Login del único admin. Limitado a 5 intentos/min por IP."""
     s = get_settings()
     if not s.admin_password:
-        log.error("ADMIN_PASSWORD not configured")
-        raise HTTPException(status_code=500, detail="Server auth not configured")
+        log.error("ADMIN_PASSWORD no configurada")
+        raise HTTPException(
+            status_code=500,
+            detail="Autenticación del servidor no configurada",
+        )
 
     if body.username != s.admin_user or body.password != s.admin_password:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
     token, expires_in = create_access_token(body.username)
     return TokenResponse(access_token=token, token_type="bearer", expires_in=expires_in)
