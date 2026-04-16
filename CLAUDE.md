@@ -13,13 +13,13 @@ All UI copy, DB column names, enum values, and log messages are in **Spanish**. 
 Seven-stage pipeline, orchestrated via `docker-compose.yml` (8 services on an internal bridge network):
 
 ```
-WhatsApp → extractor (Node/whatsapp-web.js) → Postgres (raw)
+WhatsApp → extractor (Node/Baileys) → Postgres (raw)
          → transcriber (Python/Whisper API)  → Postgres (enriched)
          → analyzer (Python/Claude Sonnet)   → Postgres (final)
          → api (FastAPI) → dashboard (Next.js) → nginx+certbot
 ```
 
-- **`extractor/`** — Node 20. QR-login WhatsApp client with checkpointing (resumes per-chat on crash), rate-limited (`EXTRACTION_DELAY_*`, `MEDIA_DELAY_*` env vars) to avoid WhatsApp bans. Writes raw JSON to `./data` volume + rows in Postgres. Session is persisted in the `extractor_session` volume (`.wwebjs_auth`) — deleting it forces a new QR scan.
+- **`extractor/`** — Node 20 + `@whiskeysockets/baileys` (no Chromium). Connects via WebSocket protocol directly. Uses `syncFullHistory: true` + `Browsers.macOS('Desktop')` for max history on initial sync. Session is persisted in the `extractor_session` volume (`/app/auth_state`) — deleting it forces a new QR scan. Rate-limited (`EXTRACTION_DELAY_*`, `MEDIA_DELAY_*` env vars). Writes raw JSON to `./data` volume + rows in Postgres. Checkpoints allow resume per-chat on crash.
 - **`transcriber/`** — Python 3.11. N parallel workers (`TRANSCRIBER_WORKERS`, default 3) pull audio jobs via Redis, call OpenAI Whisper, score confidence (`CONFIDENCE_THRESHOLD`, default 0.80), then build *unified transcripts* (text + transcribed audio in chronological order) that the analyzer consumes.
 - **`analyzer/`** — Python 3.11. Workers (`ANALYZER_WORKERS`, default 2) call Claude (`CLAUDE_MODEL`, default `claude-sonnet-4-20250514`) with the prompt in `analyzer/src/prompt.py`; `validator.py` enforces the JSON shape of the 45+-field output before writing back. `knowledge_base.py` produces the Dapta export.
 - **`api/`** — FastAPI. JWT auth (single admin user, `ADMIN_USER`/`ADMIN_PASSWORD`). Routers under `api/src/routers/` map 1:1 to the dashboard panels: `overview`, `leads`, `advisors`, `product_intel`, `errors`, `competitors`, `knowledge_base`, plus `export` (CSV/JSON).

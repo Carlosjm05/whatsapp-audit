@@ -65,7 +65,7 @@ services:
         max-file: "3"
 
   # ─────────────────────────────────────────────
-  # EXTRACTOR DE WHATSAPP (Node.js)
+  # EXTRACTOR DE WHATSAPP (Node.js + Baileys)
   # ─────────────────────────────────────────────
   extractor:
     build:
@@ -84,7 +84,9 @@ services:
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - DATA_DIR=/app/data
+      - SESSION_PATH=/app/auth_state
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - SYNC_TIMEOUT_MS=${SYNC_TIMEOUT_MS:-180000}
       - EXTRACTION_DELAY_MIN=${EXTRACTION_DELAY_MIN:-2000}
       - EXTRACTION_DELAY_MAX=${EXTRACTION_DELAY_MAX:-4000}
       - MEDIA_DELAY_MIN=${MEDIA_DELAY_MIN:-3000}
@@ -92,7 +94,7 @@ services:
       - MAX_RETRIES=${MAX_RETRIES:-3}
     volumes:
       - ./data:/app/data
-      - extractor_session:/app/.wwebjs_auth
+      - extractor_session:/app/auth_state
     depends_on:
       postgres:
         condition: service_healthy

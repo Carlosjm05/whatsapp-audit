@@ -1,56 +1,31 @@
 // ══════════════════════════════════════════════════════════════
-// WHATSAPP EXTRACTOR — PUNTO DE ENTRADA
+// WHATSAPP EXTRACTOR — Baileys (sin Chromium)
 // ══════════════════════════════════════════════════════════════
 
-const fs = require('fs');
-const path = require('path');
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const P = require('pino');
 const qrcode = require('qrcode-terminal');
 const { createLogger } = require('./logger');
 const { Database } = require('./database');
 const { Extractor } = require('./extractor');
 const { sleep, parseArgs } = require('./utils');
 
-const SESSION_PATH = '/app/.wwebjs_auth';
-
-// ─── LIMPIEZA DE LOCK FILES DE CHROMIUM ─────────────────────
-// Si el extractor muere abruptamente, Chromium deja archivos
-// SingletonLock/SingletonSocket/SingletonCookie en el user-data-dir
-// que impiden el siguiente arranque. Los borramos antes de lanzar.
-function cleanupChromiumLocks(rootPath) {
-    const LOCK_NAMES = new Set(['SingletonLock', 'SingletonSocket', 'SingletonCookie']);
-    let removed = 0;
-    const walk = (dir) => {
-        let entries;
-        try {
-            entries = fs.readdirSync(dir, { withFileTypes: true });
-        } catch (err) {
-            return;
-        }
-        for (const entry of entries) {
-            const full = path.join(dir, entry.name);
-            if (LOCK_NAMES.has(entry.name)) {
-                try {
-                    fs.rmSync(full, { force: true });
-                    logger.info(`🧹 Lock residual eliminado: ${full}`);
-                    removed++;
-                } catch (err) {
-                    logger.warn(`No se pudo borrar ${full}: ${err.message}`);
-                }
-            } else if (entry.isDirectory() && !entry.isSymbolicLink()) {
-                walk(full);
-            }
-        }
-    };
-    walk(rootPath);
-    if (removed === 0) {
-        logger.info('🧹 No había lock files de Chromium pendientes.');
-    }
-}
+// Baileys — manejar ambos estilos de export (default vs named)
+const baileys = require('@whiskeysockets/baileys');
+const makeWASocket = baileys.default || baileys.makeWASocket;
+const {
+    useMultiFileAuthState,
+    Browsers,
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore,
+    DisconnectReason,
+} = baileys;
 
 const logger = createLogger('main');
 
 // ─── CONFIGURACIÓN ──────────────────────────────────────────
+const SESSION_PATH = process.env.SESSION_PATH || '/app/auth_state';
+const SYNC_TIMEOUT_MS = parseInt(process.env.SYNC_TIMEOUT_MS || '180000');
+
 const CONFIG = {
     extractionDelayMin: parseInt(process.env.EXTRACTION_DELAY_MIN || '2000'),
     extractionDelayMax: parseInt(process.env.EXTRACTION_DELAY_MAX || '4000'),
@@ -58,387 +33,362 @@ const CONFIG = {
     mediaDelayMax: parseInt(process.env.MEDIA_DELAY_MAX || '6000'),
     maxRetries: parseInt(process.env.MAX_RETRIES || '3'),
     dataDir: process.env.DATA_DIR || './data',
-    logLevel: process.env.LOG_LEVEL || 'info',
 };
 
 // ─── ESTADO GLOBAL ──────────────────────────────────────────
-let client = null;
+let sock = null;
 let db = null;
 let isShuttingDown = false;
 
-// ─── INICIALIZAR CLIENTE DE WHATSAPP ────────────────────────
-function createWhatsAppClient() {
-    cleanupChromiumLocks(SESSION_PATH);
+// Acumulador de mensajes del history sync
+const syncedMessages = new Map(); // jid -> WAMessage[]
+const syncedContacts = new Map(); // jid -> pushName
+let syncComplete = false;
+let totalSyncedMsgs = 0;
 
-    const client = new Client({
-        authStrategy: new LocalAuth({
-            dataPath: SESSION_PATH
-        }),
-        puppeteer: {
-            headless: true,
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-            protocolTimeout: 600000,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-gpu',
-                '--single-process',
-                '--disable-extensions',
-                '--disable-features=LockProfileCookieDatabase',
-            ],
+// ─── CREAR SOCKET DE BAILEYS ────────────────────────────────
+async function createSocket() {
+    const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
+    const { version } = await fetchLatestBaileysVersion();
+
+    logger.info(`Baileys WA v${version.join('.')} — creando socket...`);
+
+    const pinoLogger = P({ level: 'silent' });
+
+    const socket = makeWASocket({
+        version,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pinoLogger),
         },
-        webVersionCache: {
-            type: 'remote',
-            remotePath: 'https://raw.githubusercontent.com/nicollaseng/nicollaseng/master/nicollaseng_web_v2.2414.7.json',
+        browser: Browsers.macOS('Desktop'),
+        syncFullHistory: true,
+        printQRInTerminal: false,
+        logger: pinoLogger,
+        generateHighQualityLinkPreview: false,
+        getMessage: async (key) => {
+            const msgs = syncedMessages.get(key.remoteJid) || [];
+            return msgs.find(m => m.key?.id === key.id)?.message || undefined;
         },
     });
 
-    // ─── EVENTOS DEL CLIENTE ────────────────────────────────
-    client.on('qr', (qr) => {
-        logger.info('═══════════════════════════════════════════');
-        logger.info('ESCANEA ESTE CÓDIGO QR CON TU WHATSAPP:');
-        logger.info('═══════════════════════════════════════════');
-        qrcode.generate(qr, { small: true });
-        logger.info('Abre WhatsApp > Dispositivos vinculados > Vincular dispositivo');
-        logger.info('═══════════════════════════════════════════');
-    });
+    socket.ev.on('creds.update', saveCreds);
 
-    client.on('authenticated', () => {
-        logger.info('✅ Autenticación exitosa — sesión guardada');
-    });
-
-    client.on('auth_failure', (msg) => {
-        logger.error(`❌ Error de autenticación: ${msg}`);
-        logger.info('Eliminando sesión guardada para reintentar...');
-    });
-
-    client.on('ready', () => {
-        logger.info('═══════════════════════════════════════════');
-        logger.info('✅ WHATSAPP CONECTADO Y LISTO');
-        logger.info('═══════════════════════════════════════════');
-    });
-
-    client.on('disconnected', (reason) => {
-        logger.warn(`⚠️  WhatsApp desconectado: ${reason}`);
-        logger.info('El sistema guardó checkpoint. Reconecta escaneando QR nuevamente.');
-    });
-
-    client.on('change_state', (state) => {
-        logger.info(`Estado de conexión: ${state}`);
-    });
-
-    return client;
+    return socket;
 }
 
-// ─── OBTENER CHATS CON REINTENTOS ───────────────────────────
-// WhatsApp Web necesita tiempo para sincronizar después de `ready`;
-// getChats() puede fallar con "Execution context was destroyed" o
-// "Runtime.callFunctionOn timed out" si se llama demasiado pronto.
-async function getChatsWithRetry(client, { attempts = 5, initialDelayMs = 5000 } = {}) {
-    let lastError = null;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-        try {
-            logger.info(`Obteniendo chats (intento ${attempt}/${attempts})...`);
-            const chats = await client.getChats();
-            logger.info(`✅ getChats() exitoso: ${chats.length} chats`);
-            return chats;
-        } catch (error) {
-            lastError = error;
-            logger.warn(`⚠️  getChats() falló (intento ${attempt}/${attempts}): ${error.message}`);
-            if (attempt < attempts) {
-                const backoff = initialDelayMs * Math.pow(2, attempt - 1);
-                logger.info(`   Reintentando en ${Math.round(backoff / 1000)}s...`);
-                await sleep(backoff);
+// ─── ESPERAR CONEXIÓN + QR ──────────────────────────────────
+async function waitForConnection(socket) {
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            reject(new Error('Timeout: conexión no establecida en 5 minutos'));
+        }, 300000);
+
+        socket.ev.on('connection.update', (update) => {
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                logger.info('═══════════════════════════════════════════');
+                logger.info('ESCANEA ESTE CÓDIGO QR CON TU WHATSAPP:');
+                logger.info('═══════════════════════════════════════════');
+                qrcode.generate(qr, { small: true });
+                logger.info('Abre WhatsApp > Dispositivos vinculados > Vincular dispositivo');
+                logger.info('═══════════════════════════════════════════');
+            }
+
+            if (connection === 'close') {
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                if (statusCode === DisconnectReason.loggedOut) {
+                    clearTimeout(timeout);
+                    reject(new Error('Sesión cerrada por WhatsApp. Borra auth_state y re-escanea QR.'));
+                } else {
+                    logger.warn(`Conexión cerrada (código: ${statusCode}). Esperando reconexión...`);
+                }
+            }
+
+            if (connection === 'open') {
+                logger.info('═══════════════════════════════════════════');
+                logger.info('✅ WHATSAPP CONECTADO — Baileys');
+                logger.info('═══════════════════════════════════════════');
+                clearTimeout(timeout);
+                resolve();
+            }
+        });
+    });
+}
+
+// ─── RECOLECTAR HISTORIAL SINCRONIZADO ──────────────────────
+function setupHistorySync(socket) {
+    socket.ev.on('messaging-history.set', ({ messages, contacts, isLatest }) => {
+        let batchIndividual = 0;
+
+        for (const msg of messages) {
+            const jid = msg.key?.remoteJid;
+            if (!jid || jid === 'status@broadcast') continue;
+            if (jid.endsWith('@g.us')) continue;
+
+            if (!syncedMessages.has(jid)) syncedMessages.set(jid, []);
+            syncedMessages.get(jid).push(msg);
+            batchIndividual++;
+            totalSyncedMsgs++;
+        }
+
+        // Guardar nombres de contactos
+        if (contacts) {
+            for (const c of contacts) {
+                if (c.id && c.notify) syncedContacts.set(c.id, c.notify);
             }
         }
-    }
-    throw new Error(`getChats() falló tras ${attempts} intentos: ${lastError?.message}`);
+
+        logger.info(
+            `📥 Sync batch: ${batchIndividual} msgs individuales ` +
+            `(${syncedMessages.size} chats, ${totalSyncedMsgs} msgs total)` +
+            `${isLatest ? ' — ÚLTIMO BATCH' : ''}`
+        );
+
+        if (isLatest) {
+            syncComplete = true;
+        }
+    });
+
+    // También capturar mensajes nuevos que llegan durante la extracción
+    socket.ev.on('messages.upsert', ({ messages, type }) => {
+        if (type !== 'notify') return;
+        for (const msg of messages) {
+            const jid = msg.key?.remoteJid;
+            if (!jid || jid === 'status@broadcast' || jid.endsWith('@g.us')) continue;
+            if (!syncedMessages.has(jid)) syncedMessages.set(jid, []);
+            syncedMessages.get(jid).push(msg);
+        }
+    });
+
+    // Capturar pushNames de contacts.update
+    socket.ev.on('contacts.update', (updates) => {
+        for (const u of updates) {
+            if (u.id && u.notify) syncedContacts.set(u.id, u.notify);
+        }
+    });
 }
 
-// Espera a que WhatsApp Web termine de sincronizar tras el evento `ready`.
-// Después de re-vincular un dispositivo, WA tarda mucho más en cargar
-// módulos internos (waitForChatLoading, etc). 60s es el default; se
-// puede bajar con POST_READY_SYNC_MS si la sesión ya está "caliente".
-async function waitForSync(client, syncMs = 60000) {
-    logger.info(`Esperando ${Math.round(syncMs / 1000)}s para que WhatsApp Web termine de sincronizar...`);
-    await sleep(syncMs);
-}
+// ─── ESPERAR A QUE TERMINE EL SYNC ─────────────────────────
+async function waitForHistorySync() {
+    logger.info(`⏳ Esperando sincronización de historial (máx ${Math.round(SYNC_TIMEOUT_MS / 1000)}s)...`);
+    const start = Date.now();
 
-// Verifica que WhatsApp Web esté realmente listo sondeando getState()
-// y client.info. Algunos módulos internos del Store sólo quedan
-// disponibles una vez que el estado reporta CONNECTED y el info del
-// usuario está poblado.
-async function waitForStableConnection(client, {
-    maxAttempts = 30,
-    intervalMs = 3000,
-    stableHits = 3,
-} = {}) {
-    logger.info('🔎 Verificando que WhatsApp Web esté realmente listo...');
-    let consecutiveOk = 0;
-    let lastState = null;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        let state = null;
-        try {
-            state = await client.getState();
-        } catch (err) {
-            logger.warn(`   getState() falló (${attempt}/${maxAttempts}): ${err.message}`);
+    while (!syncComplete && (Date.now() - start) < SYNC_TIMEOUT_MS) {
+        await sleep(3000);
+        if (!syncComplete) {
+            logger.info(`   ... ${syncedMessages.size} chats, ${totalSyncedMsgs} msgs hasta ahora`);
         }
-
-        const hasInfo = !!(client.info && (client.info.wid || client.info.me));
-
-        if (state !== lastState) {
-            logger.info(`   Estado: ${state || 'desconocido'} | info: ${hasInfo ? 'ok' : 'pendiente'}`);
-            lastState = state;
-        }
-
-        if (state === 'CONNECTED' && hasInfo) {
-            consecutiveOk++;
-            if (consecutiveOk >= stableHits) {
-                logger.info(`✅ Conexión estable (${stableHits} sondeos CONNECTED + info).`);
-                return;
-            }
-        } else {
-            consecutiveOk = 0;
-        }
-
-        await sleep(intervalMs);
     }
 
-    logger.warn('⚠️  No se confirmó CONNECTED estable; continuando de todos modos.');
+    if (!syncComplete) {
+        logger.warn('⚠️  Timeout de sync — continuando con los mensajes disponibles');
+    }
+
+    logger.info('═══════════════════════════════════════════');
+    logger.info(`✅ SYNC FINALIZADO:`);
+    logger.info(`   Chats individuales: ${syncedMessages.size}`);
+    logger.info(`   Mensajes totales: ${totalSyncedMsgs}`);
+    logger.info(`   Contactos con nombre: ${syncedContacts.size}`);
+    logger.info('═══════════════════════════════════════════');
 }
 
-// ─── KEEP-ALIVE: EVITAR QUE WA WEB PAUSE LA SINCRONIZACIÓN ─
-// WhatsApp Web detecta ventanas headless/inactivas y pausa la
-// sincronización de mensajes. Inyectamos:
-// 1. Override permanente de document.hidden y visibilityState
-// 2. Heartbeat cada 5s con eventos focus/visibilitychange + click
-// 3. Override de Page.setLifecycleEventsEnabled de CDP
-async function injectKeepAlive(client) {
-    const page = client.pupPage;
-    if (!page) {
-        logger.warn('⚠️  pupPage no disponible, no se puede inyectar keep-alive');
+// ─── PEDIR MÁS HISTORIAL (fetchMessageHistory) ─────────────
+async function requestMoreHistory(socket, jid, existingMessages) {
+    if (typeof socket.fetchMessageHistory !== 'function') {
+        logger.info('   fetchMessageHistory no disponible en esta versión de Baileys');
         return;
     }
 
-    logger.info('💓 Inyectando keep-alive para mantener WA Web activo...');
+    existingMessages.sort((a, b) =>
+        Number(a.messageTimestamp || 0) - Number(b.messageTimestamp || 0)
+    );
+    const oldest = existingMessages[0];
+    if (!oldest) return;
 
-    try {
-        // Override a nivel CDP: decirle a Chromium que la página es visible
-        const cdp = await page.target().createCDPSession();
-        await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
-        await cdp.send('Page.setWebLifecycleState', { state: 'active' });
-    } catch (err) {
-        logger.warn(`   CDP overrides parcialmente fallidos (no crítico): ${err.message}`);
-    }
+    const MAX_BATCHES = 15;
+    for (let batch = 1; batch <= MAX_BATCHES; batch++) {
+        const countBefore = (syncedMessages.get(jid) || []).length;
 
-    await page.evaluate(() => {
-        // ── 1. Override permanente de visibility ──
-        Object.defineProperty(document, 'hidden', {
-            get: () => false,
-            configurable: true,
-        });
-        Object.defineProperty(document, 'visibilityState', {
-            get: () => 'visible',
-            configurable: true,
-        });
-        // Algunos builds de WA Web leen webkitHidden
         try {
-            Object.defineProperty(document, 'webkitHidden', {
-                get: () => false,
-                configurable: true,
-            });
-            Object.defineProperty(document, 'webkitVisibilityState', {
-                get: () => 'visible',
-                configurable: true,
-            });
-        } catch (_) {}
+            const sortedMsgs = (syncedMessages.get(jid) || []).sort((a, b) =>
+                Number(a.messageTimestamp || 0) - Number(b.messageTimestamp || 0)
+            );
+            const oldestMsg = sortedMsgs[0];
 
-        // Override hasFocus para que siempre reporte true
-        document.hasFocus = () => true;
+            await socket.fetchMessageHistory(
+                50,
+                oldestMsg.key,
+                oldestMsg.messageTimestamp
+            );
+        } catch (err) {
+            logger.info(`   fetchMessageHistory terminó (batch ${batch}): ${err.message}`);
+            break;
+        }
 
-        // ── 2. Interceptar el Visibility API event listener ──
-        // Prevenir que WA Web registre su listener de pausa
-        const origAddEventListener = document.addEventListener.bind(document);
-        document.addEventListener = function(type, fn, opts) {
-            if (type === 'visibilitychange') return;
-            return origAddEventListener(type, fn, opts);
-        };
+        // Esperar a que lleguen mensajes vía messaging-history.set
+        await sleep(5000);
 
-        // ── 3. Heartbeat periódico ──
-        if (window.__waKeepAlive) clearInterval(window.__waKeepAlive);
-        window.__waKeepAlive = setInterval(() => {
-            // Eventos de focus
-            window.dispatchEvent(new Event('focus'));
-            document.dispatchEvent(new Event('focus'));
+        const countAfter = (syncedMessages.get(jid) || []).length;
+        const newMsgs = countAfter - countBefore;
 
-            // Forzar visibilitychange con estado visible
-            document.dispatchEvent(new Event('visibilitychange'));
-
-            // Mouse move aleatorio para simular actividad
-            const x = Math.floor(Math.random() * 800) + 100;
-            const y = Math.floor(Math.random() * 600) + 100;
-            document.dispatchEvent(new MouseEvent('mousemove', {
-                clientX: x, clientY: y, bubbles: true
-            }));
-        }, 5000);
-    });
-
-    logger.info('💓 Keep-alive inyectado: visibility override + heartbeat cada 5s');
+        if (newMsgs > 0) {
+            logger.info(`   📜 Batch ${batch}: +${newMsgs} mensajes adicionales (total: ${countAfter})`);
+        } else {
+            logger.info(`   📜 Batch ${batch}: sin mensajes nuevos — historial completo`);
+            break;
+        }
+    }
 }
 
 // ─── MODO: TEST DE CONEXIÓN ─────────────────────────────────
-async function runTestMode(client) {
-    logger.info('🔍 MODO TEST — Verificando conexión...');
+async function runTestMode() {
+    logger.info('🔍 MODO TEST — Resumen de sincronización:');
+    logger.info('═══════════════════════════════════════════');
+    logger.info(`📊 RESUMEN DE TU WHATSAPP:`);
+    logger.info(`   Chats individuales sincronizados: ${syncedMessages.size}`);
+    logger.info(`   Mensajes totales: ${totalSyncedMsgs}`);
+    logger.info(`   Contactos con nombre: ${syncedContacts.size}`);
+    logger.info('═══════════════════════════════════════════');
 
-    const chats = await getChatsWithRetry(client);
-    const contacts = await client.getContacts();
-    
-    const individualChats = chats.filter(c => !c.isGroup);
-    const groupChats = chats.filter(c => c.isGroup);
-    
-    logger.info('═══════════════════════════════════════════');
-    logger.info('📊 RESUMEN DE TU WHATSAPP:');
-    logger.info(`   Chats individuales: ${individualChats.length}`);
-    logger.info(`   Grupos: ${groupChats.length}`);
-    logger.info(`   Contactos: ${contacts.length}`);
-    logger.info('═══════════════════════════════════════════');
-    
-    // Mostrar los primeros 5 chats como muestra
-    logger.info('📋 Primeros 5 chats (muestra):');
-    for (const chat of individualChats.slice(0, 5)) {
-        const lastMsg = chat.lastMessage;
-        logger.info(`   📱 ${chat.name || 'Sin nombre'} | Mensajes: ~${chat.unreadCount || '?'} sin leer | Último: ${lastMsg?.timestamp ? new Date(lastMsg.timestamp * 1000).toLocaleDateString() : 'N/A'}`);
+    // Top 10 chats por cantidad de mensajes
+    const sorted = [...syncedMessages.entries()]
+        .map(([jid, msgs]) => ({
+            jid,
+            name: syncedContacts.get(jid) || jid.replace('@s.whatsapp.net', ''),
+            count: msgs.length,
+        }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
+
+    logger.info('📋 Top 10 chats con más mensajes:');
+    for (const chat of sorted) {
+        logger.info(`   📱 ${chat.name} — ${chat.count} msgs`);
     }
-    
+
     logger.info('');
-    logger.info('✅ Conexión verificada. Todo funciona correctamente.');
-    logger.info('   Para extraer, ejecuta: npm run extract');
+    logger.info('✅ Conexión verificada. Para extraer, ejecuta: npm run extract');
 }
 
 // ─── MODO: ESTADÍSTICAS ─────────────────────────────────────
-async function runStatsMode(db) {
+async function runStatsMode() {
     logger.info('📊 MODO STATS — Consultando base de datos...');
-    
     const stats = await db.getExtractionStats();
-    
+
     logger.info('═══════════════════════════════════════════');
     logger.info('📊 ESTADÍSTICAS DE EXTRACCIÓN:');
     logger.info(`   Total conversaciones: ${stats.total}`);
     logger.info(`   Extraídas: ${stats.extracted}`);
     logger.info(`   Pendientes: ${stats.pending}`);
     logger.info(`   Fallidas: ${stats.failed}`);
-    logger.info(`   Total mensajes: ${stats.totalMessages}`);
-    logger.info(`   Total audios: ${stats.totalAudios}`);
+    logger.info(`   Total mensajes: ${stats.total_messages}`);
+    logger.info(`   Total audios: ${stats.total_audios}`);
     logger.info('═══════════════════════════════════════════');
 }
 
-// ─── MODO: EXTRACCIÓN COMPLETA ──────────────────────────────
-async function runExtractMode(client, db, options = {}) {
-    logger.info('🚀 MODO EXTRACCIÓN — Iniciando proceso completo...');
+// ─── MODO: EXTRACCIÓN ───────────────────────────────────────
+async function runExtractMode(options = {}) {
+    logger.info('🚀 MODO EXTRACCIÓN — Iniciando proceso...');
 
-    const extractor = new Extractor(client, db, CONFIG);
-
-    // Registrar la corrida en la BD
+    const extractor = new Extractor(sock, db, CONFIG);
     const runId = await db.createExtractionRun();
 
     try {
-        // Obtener todos los chats individuales (no grupos)
-        const allChats = await getChatsWithRetry(client);
-        let chats = allChats.filter(c => !c.isGroup);
+        // Filtrar chats según opciones
+        let targetChats = [...syncedMessages.entries()]
+            .map(([jid, msgs]) => ({
+                jid,
+                name: syncedContacts.get(jid) || jid.replace('@s.whatsapp.net', ''),
+                messages: msgs,
+            }));
 
-        logger.info(`Total de chats individuales encontrados: ${chats.length}`);
-
-        // --phone=573001234567: extraer solo el chat de ese número
         if (options.phone) {
             const phone = String(options.phone).replace(/[^0-9]/g, '');
-            const match = chats.find(c => (c.id?.user || c.id?._serialized?.split('@')[0]) === phone);
+            const match = targetChats.find(c =>
+                c.jid.replace('@s.whatsapp.net', '') === phone
+            );
             if (!match) {
-                throw new Error(`No se encontró chat individual para el número ${phone}`);
+                throw new Error(`No se encontró chat para el número ${phone}. Chats disponibles: ${targetChats.length}`);
             }
-            logger.info(`⚙️  --phone=${phone} aplicado: extrayendo solo ${match.name || phone}`);
-            chats = [match];
+            logger.info(`⚙️  --phone=${phone}: extrayendo solo ${match.name}`);
+            targetChats = [match];
         }
 
-        // --limit=N: solo los primeros N chats individuales
-        if (options.limit && options.limit > 0 && options.limit < chats.length) {
-            logger.info(`⚙️  --limit=${options.limit} aplicado: extrayendo solo los primeros ${options.limit} chats`);
-            chats = chats.slice(0, options.limit);
+        if (options.limit && options.limit > 0 && options.limit < targetChats.length) {
+            logger.info(`⚙️  --limit=${options.limit}: solo los primeros ${options.limit} chats`);
+            targetChats = targetChats.slice(0, options.limit);
         }
-        
-        await db.updateExtractionRun(runId, { total_chats: chats.length, status: 'running' });
-        
-        // Verificar checkpoint — ¿hay chats ya extraídos?
+
+        logger.info(`Total de chats a extraer: ${targetChats.length}`);
+        await db.updateExtractionRun(runId, { total_chats: targetChats.length, status: 'running' });
+
+        // Verificar checkpoint
         const alreadyExtracted = await db.getExtractedChatIds();
-        const pendingChats = chats.filter(c => !alreadyExtracted.has(c.id._serialized));
-        
-        if (alreadyExtracted.size > 0) {
-            logger.info(`⏩ Checkpoint encontrado: ${alreadyExtracted.size} chats ya extraídos`);
-            logger.info(`   Faltan por extraer: ${pendingChats.length}`);
-        }
-        
-        // Extraer cada chat
+
         let successCount = 0;
         let failCount = 0;
-        
-        for (let i = 0; i < pendingChats.length; i++) {
+
+        for (let i = 0; i < targetChats.length; i++) {
             if (isShuttingDown) {
                 logger.warn('⚠️  Shutdown solicitado. Guardando progreso...');
                 break;
             }
-            
-            const chat = pendingChats[i];
-            const progress = `[${i + 1 + alreadyExtracted.size}/${chats.length}]`;
-            
+
+            const chat = targetChats[i];
+            const progress = `[${i + 1}/${targetChats.length}]`;
+
+            if (alreadyExtracted.has(chat.jid)) {
+                logger.info(`${progress} ⏭️  ${chat.name}: ya extraído (checkpoint)`);
+                continue;
+            }
+
             try {
-                logger.info(`${progress} Extrayendo: ${chat.name || chat.id._serialized}`);
-                
-                await extractor.extractChat(chat, runId);
+                logger.info(`${progress} Extrayendo: ${chat.name} (${chat.messages.length} msgs sincronizados)`);
+
+                // Pedir más historial si es posible
+                await requestMoreHistory(sock, chat.jid, chat.messages);
+
+                // Obtener mensajes actualizados (pueden haber llegado más)
+                const allMessages = syncedMessages.get(chat.jid) || chat.messages;
+
+                await extractor.extractChat(chat.jid, chat.name, allMessages, runId);
                 successCount++;
-                
-                // Log de progreso cada 50 chats
+
                 if ((successCount + failCount) % 50 === 0) {
-                    logger.info(`📊 Progreso: ${successCount} exitosos, ${failCount} fallidos de ${pendingChats.length} pendientes`);
+                    logger.info(`📊 Progreso: ${successCount} exitosos, ${failCount} fallidos`);
                 }
-                
-                // Delay entre chats (anti rate-limit)
+
+                // Rate limit entre chats
                 const delay = randomBetween(CONFIG.extractionDelayMin, CONFIG.extractionDelayMax);
                 await sleep(delay);
-                
+
             } catch (error) {
                 failCount++;
-                logger.error(`${progress} ❌ Error extrayendo ${chat.name || chat.id._serialized}: ${error.message}`);
-                
-                await db.markConversationFailed(chat.id._serialized, error.message);
-                
-                // Si hay muchos errores seguidos, pausar
+                logger.error(`${progress} ❌ Error: ${chat.name}: ${error.message}`);
+                await db.markConversationFailed(chat.jid, error.message);
+
                 if (failCount > 10 && failCount / (successCount + failCount) > 0.5) {
-                    logger.error('⚠️  Demasiados errores. Pausando 60 segundos...');
+                    logger.error('⚠️  Demasiados errores. Pausando 60s...');
                     await sleep(60000);
                 }
             }
         }
-        
-        // Actualizar corrida
+
         await db.updateExtractionRun(runId, {
             status: isShuttingDown ? 'paused' : 'completed',
-            extracted_chats: successCount + alreadyExtracted.size,
+            extracted_chats: successCount,
             failed_chats: failCount,
             finished_at: new Date().toISOString(),
         });
-        
+
         logger.info('═══════════════════════════════════════════');
         logger.info('✅ EXTRACCIÓN COMPLETADA');
         logger.info(`   Exitosos: ${successCount}`);
         logger.info(`   Fallidos: ${failCount}`);
         logger.info(`   Ya extraídos (checkpoint): ${alreadyExtracted.size}`);
-        logger.info(`   Total en BD: ${successCount + alreadyExtracted.size}`);
         logger.info('═══════════════════════════════════════════');
-        
+
     } catch (error) {
         logger.error(`Error fatal en extracción: ${error.message}`);
         await db.updateExtractionRun(runId, { status: 'failed', error_log: error.message });
@@ -451,19 +401,18 @@ function randomBetween(min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// ─── MANEJO DE SHUTDOWN GRACEFUL ────────────────────────────
+// ─── SHUTDOWN GRACEFUL ──────────────────────────────────────
 function setupGracefulShutdown() {
     const shutdown = async (signal) => {
         if (isShuttingDown) return;
         isShuttingDown = true;
-        
+
         logger.info(`\n⏹️  Señal ${signal} recibida. Cerrando limpiamente...`);
-        logger.info('Guardando checkpoint de extracción...');
-        
+
         try {
-            if (client) {
-                logger.info('Cerrando sesión de WhatsApp...');
-                await client.destroy();
+            if (sock) {
+                logger.info('Cerrando socket de WhatsApp...');
+                sock.end(undefined);
             }
             if (db) {
                 logger.info('Cerrando conexión a base de datos...');
@@ -472,11 +421,11 @@ function setupGracefulShutdown() {
         } catch (error) {
             logger.error(`Error durante shutdown: ${error.message}`);
         }
-        
-        logger.info('✅ Shutdown limpio completado. Nada se perdió.');
+
+        logger.info('✅ Shutdown limpio completado.');
         process.exit(0);
     };
-    
+
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('uncaughtException', async (error) => {
@@ -493,97 +442,58 @@ function setupGracefulShutdown() {
 // ─── MAIN ───────────────────────────────────────────────────
 async function main() {
     setupGracefulShutdown();
-    
+
     const args = parseArgs();
     const mode = args.mode || 'extract';
     const limit = args.limit ? parseInt(args.limit, 10) : null;
+    const phone = args.phone ? String(args.phone).replace(/[^0-9]/g, '') : null;
+
     if (args.limit && (!Number.isFinite(limit) || limit <= 0)) {
         logger.error(`Valor inválido para --limit: ${args.limit}`);
         process.exit(1);
     }
-    const phone = args.phone ? String(args.phone).replace(/[^0-9]/g, '') : null;
-    if (args.phone && !phone) {
-        logger.error(`Valor inválido para --phone: ${args.phone}`);
-        process.exit(1);
-    }
 
     logger.info('══════════════════════════════════════════════');
-    logger.info('  WHATSAPP AUDIT SYSTEM — EXTRACTOR');
+    logger.info('  WHATSAPP AUDIT SYSTEM — EXTRACTOR (Baileys)');
     logger.info(`  Modo: ${mode.toUpperCase()}`);
     if (limit) logger.info(`  Límite: ${limit} chats`);
     if (phone) logger.info(`  Teléfono: ${phone}`);
     logger.info('══════════════════════════════════════════════');
-    
-    // Conectar a base de datos
+
+    // Conectar a BD
     db = new Database();
     await db.connect();
     logger.info('✅ Conectado a PostgreSQL');
-    
-    // Solo stats no necesita WhatsApp
+
     if (mode === 'stats') {
-        await runStatsMode(db);
+        await runStatsMode();
         await db.close();
         return;
     }
-    
-    // Inicializar cliente WhatsApp
-    logger.info('Iniciando cliente de WhatsApp...');
-    logger.info('(Esto puede tomar 30-60 segundos la primera vez)');
-    
-    client = createWhatsAppClient();
-    
-    // Esperar a que esté listo. Resuelve con 'ready' o con
-    // change_state=CONNECTED (safety net, a veces 'ready' tarda o no llega).
-    await new Promise((resolve, reject) => {
-        let done = false;
-        const finish = (fn) => (...args) => {
-            if (done) return;
-            done = true;
-            clearTimeout(timeout);
-            fn(...args);
-        };
-        const timeout = setTimeout(() => {
-            if (done) return;
-            done = true;
-            reject(new Error('Timeout esperando conexión de WhatsApp (5 minutos)'));
-        }, 300000); // 5 minutos de timeout
 
-        client.on('ready', finish(resolve));
-        client.on('change_state', (state) => {
-            if (state === 'CONNECTED') finish(resolve)();
-        });
-        client.on('auth_failure', finish((msg) => reject(new Error(`Auth failure: ${msg}`))));
+    // Crear socket y conectar
+    sock = await createSocket();
+    setupHistorySync(sock);
+    await waitForConnection(sock);
 
-        client.initialize().catch(finish(reject));
-    });
+    // Esperar sync de historial
+    await waitForHistorySync();
 
-    // ── Inyectar keep-alive ANTES de la espera de sincronización ──
-    // WhatsApp Web pausa la sincronización de mensajes cuando detecta
-    // que la ventana está inactiva (headless). Inyectamos overrides y
-    // un heartbeat de actividad para mantenerlo sincronizando.
-    await injectKeepAlive(client);
-
-    // WhatsApp Web sigue sincronizando después de `ready`. Especialmente
-    // tras re-vincular el dispositivo, los módulos internos tardan en
-    // quedar disponibles. Espera fija + sondeo de getState().
-    await waitForSync(client, parseInt(process.env.POST_READY_SYNC_MS || '60000'));
-    await waitForStableConnection(client);
-
-    // Ejecutar según el modo
+    // Ejecutar modo
     switch (mode) {
         case 'test':
-            await runTestMode(client);
+            await runTestMode();
             break;
         case 'extract':
-            await runExtractMode(client, db, { limit, phone });
+            await runExtractMode({ limit, phone });
             break;
         default:
             logger.error(`Modo desconocido: ${mode}`);
     }
-    
+
     // Cleanup
     logger.info('Cerrando conexiones...');
-    await client.destroy();
+    sock.end(undefined);
     await db.close();
     logger.info('✅ Todo cerrado limpiamente.');
 }
