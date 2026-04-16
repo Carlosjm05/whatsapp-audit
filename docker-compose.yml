@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   # ─────────────────────────────────────────────
   # BASE DE DATOS PRINCIPAL
@@ -91,6 +89,7 @@ services:
       - EXTRACTION_DELAY_MAX=${EXTRACTION_DELAY_MAX:-4000}
       - MEDIA_DELAY_MIN=${MEDIA_DELAY_MIN:-3000}
       - MEDIA_DELAY_MAX=${MEDIA_DELAY_MAX:-6000}
+      - MEDIA_CONCURRENCY=${MEDIA_CONCURRENCY:-5}
       - MAX_RETRIES=${MAX_RETRIES:-3}
     volumes:
       - ./data:/app/data
@@ -100,6 +99,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Healthcheck: auth_state/creds.json existe tras escanear QR.
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /app/auth_state/creds.json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
     networks:
       - internal
     logging:
@@ -125,20 +131,16 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-whatsapp_audit}
       - POSTGRES_USER=${POSTGRES_USER:-wa_admin}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
       - DATA_DIR=/app/data
-      - NUM_WORKERS=${TRANSCRIBER_WORKERS:-3}
+      - TRANSCRIBER_WORKERS=${TRANSCRIBER_WORKERS:-3}
       - MAX_RETRIES=${MAX_RETRIES:-3}
       - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.80}
+      - WHISPER_TIMEOUT_SECONDS=${WHISPER_TIMEOUT_SECONDS:-120}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ./data:/app/data
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     networks:
       - internal
@@ -165,20 +167,15 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-whatsapp_audit}
       - POSTGRES_USER=${POSTGRES_USER:-wa_admin}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
       - DATA_DIR=/app/data
-      - NUM_WORKERS=${ANALYZER_WORKERS:-2}
+      - ANALYZER_WORKERS=${ANALYZER_WORKERS:-2}
       - MAX_RETRIES=${MAX_RETRIES:-3}
-      - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-sonnet-4-20250514}
+      - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-sonnet-4-5}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ./data:/app/data
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     networks:
       - internal
@@ -208,9 +205,12 @@ services:
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - JWT_SECRET=${JWT_SECRET:?error - JWT_SECRET is required}
-      - JWT_EXPIRY_HOURS=${JWT_EXPIRY_HOURS:-24}
-      - ADMIN_USER=${ADMIN_USER:-oscar}
+      - JWT_EXPIRY_HOURS=${JWT_EXPIRY_HOURS:-8}
+      - ADMIN_USER=${ADMIN_USER:?error - ADMIN_USER is required}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?error - ADMIN_PASSWORD is required}
+      - DOMAIN=${DOMAIN:-}
+      - CORS_EXTRA_ORIGINS=${CORS_EXTRA_ORIGINS:-}
+      - STRICT_CONFIG=${STRICT_CONFIG:-false}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     ports:
       - "127.0.0.1:8000:8000"
@@ -221,11 +221,13 @@ services:
         condition: service_healthy
     networks:
       - internal
+    # Usa Python para el healthcheck (curl no está en la imagen python:slim).
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status==200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 20s
     logging:
       driver: json-file
       options:
@@ -243,6 +245,7 @@ services:
     restart: always
     environment:
       - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
@@ -272,8 +275,10 @@ services:
       - certbot_conf:/etc/letsencrypt:ro
       - certbot_www:/var/www/certbot:ro
     depends_on:
-      - api
-      - dashboard
+      api:
+        condition: service_healthy
+      dashboard:
+        condition: service_started
     networks:
       - internal
     logging:
@@ -288,6 +293,7 @@ services:
   certbot:
     image: certbot/certbot
     container_name: wa_certbot
+    restart: unless-stopped
     volumes:
       - certbot_conf:/etc/letsencrypt
       - certbot_www:/var/www/certbot

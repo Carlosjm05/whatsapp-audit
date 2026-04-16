@@ -46,6 +46,9 @@ log_ok "Sistema actualizado"
 
 # ─── 2. INSTALAR DEPENDENCIAS BASE ──────────────────────────
 log_info "Instalando dependencias base..."
+# Nota: el extractor usa Baileys (WebSocket directo), NO Puppeteer/
+# Chromium. Los paquetes libnss3/libgbm/etc. que antes se instalaban
+# aquí eran restos del stack anterior con whatsapp-web.js.
 apt-get install -y -qq \
     curl \
     wget \
@@ -64,18 +67,7 @@ apt-get install -y -qq \
     gnupg \
     lsb-release \
     software-properties-common \
-    cron \
-    awscli \
-    chromium-browser \
-    libgbm-dev \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxrandr2 \
-    libgdk-pixbuf2.0-0 \
-    libgtk-3-0 \
-    libasound2t64 2>/dev/null || apt-get install -y -qq libasound2 2>/dev/null || true
+    cron
 log_ok "Dependencias instaladas"
 
 # ─── 3. CREAR USUARIO DEPLOY ────────────────────────────────
@@ -100,15 +92,23 @@ else
 fi
 
 # ─── 4. CONFIGURAR FIREWALL ─────────────────────────────────
+# Idempotente: solo reset la primera vez. Re-ejecuciones conservan
+# reglas manuales que el operador haya agregado.
+UFW_MARKER=/var/lib/ortiz-setup-ufw-done
 log_info "Configurando firewall UFW..."
-ufw --force reset
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow 22/tcp comment "SSH"
-ufw allow 80/tcp comment "HTTP"
-ufw allow 443/tcp comment "HTTPS"
-ufw --force enable
-log_ok "Firewall configurado: solo puertos 22, 80, 443"
+if [ ! -f "$UFW_MARKER" ]; then
+    ufw --force reset
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 22/tcp comment "SSH"
+    ufw allow 80/tcp comment "HTTP"
+    ufw allow 443/tcp comment "HTTPS"
+    ufw --force enable
+    touch "$UFW_MARKER"
+    log_ok "Firewall configurado: solo puertos 22, 80, 443"
+else
+    log_warn "Firewall ya configurado antes (marker $UFW_MARKER). Saltando reset."
+fi
 
 # ─── 5. CONFIGURAR SSH SEGURO ───────────────────────────────
 log_info "Endureciendo configuración SSH..."
@@ -209,10 +209,9 @@ if [ ! -f /swapfile ]; then
     chmod 600 /swapfile
     mkswap /swapfile
     swapon /swapfile
-    echo '/swapfile none swap sw 0 0' >> /etc/fstab
-    # Optimizar uso de swap
-    echo 'vm.swappiness=10' >> /etc/sysctl.conf
-    echo 'vm.vfs_cache_pressure=50' >> /etc/sysctl.conf
+    grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    grep -q '^vm.swappiness'        /etc/sysctl.conf || echo 'vm.swappiness=10'        >> /etc/sysctl.conf
+    grep -q '^vm.vfs_cache_pressure' /etc/sysctl.conf || echo 'vm.vfs_cache_pressure=50' >> /etc/sysctl.conf
     sysctl -p
     log_ok "Swap de $SWAP_SIZE configurado"
 else
@@ -240,16 +239,24 @@ log_info "Configurando timezone a Colombia..."
 timedatectl set-timezone America/Bogota
 log_ok "Timezone: $(timedatectl show --property=Timezone --value)"
 
-# ─── 15. CONFIGURAR LÍMITES DEL SISTEMA ─────────────────────
+# ─── 15. CONFIGURAR LÍMITES DEL SISTEMA (idempotente) ───────
 log_info "Ajustando límites del sistema..."
-cat >> /etc/security/limits.conf << 'LIMEOF'
+if ! grep -q '^# ortiz-setup-limits$' /etc/security/limits.conf 2>/dev/null; then
+    cat >> /etc/security/limits.conf << 'LIMEOF'
+# ortiz-setup-limits
 * soft nofile 65536
 * hard nofile 65536
 * soft nproc 32768
 * hard nproc 32768
 LIMEOF
+    log_ok "limits.conf actualizado"
+else
+    log_warn "limits.conf ya ajustado"
+fi
 
-cat >> /etc/sysctl.conf << 'SYSEOF'
+if ! grep -q '^# ortiz-setup-sysctl$' /etc/sysctl.conf 2>/dev/null; then
+    cat >> /etc/sysctl.conf << 'SYSEOF'
+# ortiz-setup-sysctl
 # Optimizaciones de red
 net.core.somaxconn = 65535
 net.ipv4.tcp_max_syn_backlog = 65535
@@ -258,8 +265,11 @@ net.core.netdev_max_backlog = 65535
 fs.file-max = 2097152
 fs.inotify.max_user_watches = 524288
 SYSEOF
-sysctl -p 2>/dev/null
-log_ok "Límites del sistema ajustados"
+    sysctl -p 2>/dev/null
+    log_ok "sysctl.conf actualizado"
+else
+    log_warn "sysctl.conf ya ajustado"
+fi
 
 # ─── RESUMEN FINAL ──────────────────────────────────────────
 echo ""

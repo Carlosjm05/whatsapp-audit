@@ -19,9 +19,8 @@ data/transcripts/
 data/analysis/
 data/exports/
 
-# WhatsApp session
-.wwebjs_auth/
-.wwebjs_cache/
+# WhatsApp session — Baileys (el stack actual)
+auth_state/
 
 # Logs
 logs/
