@@ -321,6 +321,15 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
 
 def run_analyze(limit: Optional[int] = None) -> Dict[str, Any]:
     _install_signals()
+
+    # Auto-generar unified_transcripts faltantes antes de registrar leads.
+    # Esto permite que el analyzer funcione aunque el transcriber no haya
+    # corrido (audios aparecen como [AUDIO SIN TRANSCRIBIR] en el texto).
+    transcripts_created = db.ensure_unified_transcripts()
+    if transcripts_created > 0:
+        log.info("generated %d missing unified_transcripts from messages",
+                 transcripts_created)
+
     registered = db.register_pending_leads()
     log.info("registered %d new pending leads", registered)
     pending = db.fetch_pending_leads(limit=limit)

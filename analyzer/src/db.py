@@ -43,20 +43,111 @@ def cursor(commit: bool = True) -> Iterator[psycopg2.extensions.cursor]:
 
 
 # ─── PENDING LEADS ────────────────────────────────────────────
+# Registra un lead 'pending' por cada raw_conversation extraída que
+# aún no tenga lead. Antes dependía de unified_transcripts (que solo
+# crea el transcriber tras terminar las transcripciones de audio),
+# bloqueando conversaciones de puro texto o con audios sin transcribir.
 def register_pending_leads() -> int:
     sql = """
     INSERT INTO leads (conversation_id, phone, whatsapp_name, analysis_status)
     SELECT rc.id, rc.phone, rc.whatsapp_name, 'pending'
-    FROM unified_transcripts ut
-    JOIN raw_conversations rc ON rc.id = ut.conversation_id
-    WHERE NOT EXISTS (
-        SELECT 1 FROM leads l WHERE l.conversation_id = rc.id
-    )
+    FROM raw_conversations rc
+    WHERE rc.extraction_status = 'extracted'
+      AND COALESCE(rc.is_group, false) = false
+      AND NOT EXISTS (
+          SELECT 1 FROM leads l WHERE l.conversation_id = rc.id
+      )
     RETURNING id;
     """
     with cursor() as cur:
         cur.execute(sql)
         return cur.rowcount
+
+
+# Genera unified_transcripts on-the-fly desde messages para conversaciones
+# extraídas que aún no lo tienen. Los audios sin transcripción completa
+# quedan como [AUDIO SIN TRANSCRIBIR] — la conversación sigue siendo
+# analizable aunque falte alguna transcripción.
+def ensure_unified_transcripts() -> int:
+    select_sql = """
+    SELECT rc.id AS conversation_id
+    FROM raw_conversations rc
+    WHERE rc.extraction_status = 'extracted'
+      AND COALESCE(rc.is_group, false) = false
+      AND NOT EXISTS (
+          SELECT 1 FROM unified_transcripts ut
+          WHERE ut.conversation_id = rc.id
+      )
+    """
+    messages_sql = """
+    SELECT m.timestamp, m.sender, m.message_type, m.body,
+           m.media_duration_sec,
+           t.transcription_text, t.is_low_confidence
+    FROM messages m
+    LEFT JOIN transcriptions t ON t.message_id = m.id
+                               AND t.status = 'completed'
+    WHERE m.conversation_id = %s
+      AND m.message_type IN ('text', 'audio')
+    ORDER BY m.timestamp ASC
+    """
+    created = 0
+    with get_conn() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(select_sql)
+        conv_ids = [r["conversation_id"] for r in cur.fetchall()]
+
+        for cid in conv_ids:
+            cur.execute(messages_sql, (cid,))
+            msgs = cur.fetchall()
+            if not msgs:
+                continue
+
+            lines: List[str] = []
+            from_lead = 0
+            from_asesor = 0
+            audios_included = 0
+            audios_failed = 0
+
+            for m in msgs:
+                ts = m["timestamp"].strftime("%Y-%m-%d %H:%M") if m["timestamp"] else "????-??-?? ??:??"
+                role = "LEAD" if m["sender"] == "lead" else "ASESOR"
+                if m["sender"] == "lead":
+                    from_lead += 1
+                else:
+                    from_asesor += 1
+
+                if m["message_type"] == "text" and m["body"]:
+                    lines.append(f"[{ts}] {role}: {m['body']}")
+                elif m["message_type"] == "audio":
+                    duration = m.get("media_duration_sec") or 0
+                    if m.get("transcription_text"):
+                        note = " [BAJA CONFIANZA]" if m.get("is_low_confidence") else ""
+                        lines.append(
+                            f"[{ts}] {role} (audio {duration}s{note}): {m['transcription_text']}"
+                        )
+                        audios_included += 1
+                    else:
+                        lines.append(f"[{ts}] {role} (audio {duration}s): [AUDIO SIN TRANSCRIBIR]")
+                        audios_failed += 1
+
+            full = "\n\n".join(lines)
+            word_count = len(full.split())
+
+            cur.execute(
+                """INSERT INTO unified_transcripts
+                     (conversation_id, full_transcript, total_messages,
+                      total_from_lead, total_from_asesor,
+                      total_audios_included, total_audios_failed, word_count)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (conversation_id) DO NOTHING""",
+                (cid, full, len(msgs), from_lead, from_asesor,
+                 audios_included, audios_failed, word_count),
+            )
+            if cur.rowcount > 0:
+                created += 1
+
+        conn.commit()
+    return created
 
 
 def fetch_pending_leads(limit: Optional[int] = None) -> List[Dict[str, Any]]:
