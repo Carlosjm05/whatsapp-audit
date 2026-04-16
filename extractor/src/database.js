@@ -120,41 +120,119 @@ class Database {
     }
 
     // ─── MESSAGES ───────────────────────────────────────────
+    // Estrategia: batches de 500 rows con INSERT multi-fila.
+    // Si un batch falla, fallback a uno por uno para aislar el row
+    // malo y poder loguear el error exacto sin perder los demás.
+    // Retorna { inserted, skipped, errors: [{ id, error }] }.
     async saveMessages(conversationId, messages) {
-        if (!messages || messages.length === 0) return;
-
-        const client = await this.pool.connect();
-        try {
-            await client.query('BEGIN');
-
-            for (const msg of messages) {
-                await client.query(
-                    `INSERT INTO messages (
-                        id, conversation_id, message_id, timestamp, sender,
-                        sender_phone, sender_name, message_type, body,
-                        media_path, media_size_bytes, media_duration_sec,
-                        media_mimetype, is_forwarded, is_reply, reply_to_id
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-                    ON CONFLICT (conversation_id, message_id) DO NOTHING`,
-                    [
-                        uuidv4(), conversationId, msg.message_id,
-                        msg.timestamp, msg.sender, msg.sender_phone,
-                        msg.sender_name, msg.message_type, msg.body,
-                        msg.media_path, msg.media_size_bytes,
-                        msg.media_duration_sec, msg.media_mimetype,
-                        msg.is_forwarded || false, msg.is_reply || false,
-                        msg.reply_to_id
-                    ]
-                );
-            }
-
-            await client.query('COMMIT');
-        } catch (error) {
-            await client.query('ROLLBACK');
-            throw error;
-        } finally {
-            client.release();
+        if (!messages || messages.length === 0) {
+            return { inserted: 0, skipped: 0, errors: [] };
         }
+
+        const BATCH_SIZE = 500;
+        let inserted = 0;
+        let skipped = 0;
+        const errors = [];
+
+        for (let i = 0; i < messages.length; i += BATCH_SIZE) {
+            const batch = messages.slice(i, i + BATCH_SIZE);
+            try {
+                const r = await this._insertMessagesBatch(conversationId, batch);
+                inserted += r.inserted;
+                skipped += batch.length - r.inserted;
+            } catch (batchErr) {
+                logger.warn(
+                    `Batch de ${batch.length} mensajes falló: ${batchErr.message}. ` +
+                    `Reintentando uno por uno para aislar el error...`
+                );
+                for (const msg of batch) {
+                    try {
+                        const ok = await this._insertOneMessage(conversationId, msg);
+                        if (ok) inserted++;
+                        else skipped++;
+                    } catch (rowErr) {
+                        errors.push({ id: msg.message_id, error: rowErr.message });
+                        if (errors.length <= 5) {
+                            logger.warn(`  ❌ msg ${msg.message_id}: ${rowErr.message}`);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (errors.length > 5) {
+            logger.warn(`  (+${errors.length - 5} errores adicionales de INSERT ocultos)`);
+        }
+
+        return { inserted, skipped, errors };
+    }
+
+    async _insertMessagesBatch(conversationId, messages) {
+        const cols = [
+            'id', 'conversation_id', 'message_id', 'timestamp', 'sender',
+            'sender_phone', 'sender_name', 'message_type', 'body',
+            'media_path', 'media_size_bytes', 'media_duration_sec',
+            'media_mimetype', 'is_forwarded', 'is_reply', 'reply_to_id',
+        ];
+        const rows = [];
+        const values = [];
+        let paramIdx = 1;
+
+        for (const msg of messages) {
+            const ph = [];
+            for (let k = 0; k < cols.length; k++) ph.push(`$${paramIdx++}`);
+            rows.push(`(${ph.join(', ')})`);
+            values.push(
+                uuidv4(), conversationId, msg.message_id,
+                msg.timestamp, msg.sender, msg.sender_phone,
+                msg.sender_name, msg.message_type, msg.body,
+                msg.media_path, msg.media_size_bytes,
+                msg.media_duration_sec, msg.media_mimetype,
+                msg.is_forwarded || false, msg.is_reply || false,
+                msg.reply_to_id
+            );
+        }
+
+        const sql = `
+            INSERT INTO messages (${cols.join(', ')})
+            VALUES ${rows.join(', ')}
+            ON CONFLICT (conversation_id, message_id) DO NOTHING
+            RETURNING id
+        `;
+        const res = await this.pool.query(sql, values);
+        return { inserted: res.rowCount };
+    }
+
+    async _insertOneMessage(conversationId, msg) {
+        const res = await this.pool.query(
+            `INSERT INTO messages (
+                id, conversation_id, message_id, timestamp, sender,
+                sender_phone, sender_name, message_type, body,
+                media_path, media_size_bytes, media_duration_sec,
+                media_mimetype, is_forwarded, is_reply, reply_to_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            ON CONFLICT (conversation_id, message_id) DO NOTHING
+            RETURNING id`,
+            [
+                uuidv4(), conversationId, msg.message_id,
+                msg.timestamp, msg.sender, msg.sender_phone,
+                msg.sender_name, msg.message_type, msg.body,
+                msg.media_path, msg.media_size_bytes,
+                msg.media_duration_sec, msg.media_mimetype,
+                msg.is_forwarded || false, msg.is_reply || false,
+                msg.reply_to_id,
+            ]
+        );
+        return res.rowCount > 0;
+    }
+
+    // Elimina una conversación y sus mensajes (usado con --force).
+    async deleteConversation(chatId) {
+        const res = await this.pool.query(
+            `DELETE FROM raw_conversations WHERE chat_id = $1 RETURNING id`,
+            [chatId]
+        );
+        return res.rowCount;
     }
 
     async updateMessageMedia(conversationId, messageId, mediaInfo) {

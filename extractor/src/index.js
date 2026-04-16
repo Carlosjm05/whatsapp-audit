@@ -410,8 +410,22 @@ async function runExtractMode(options = {}) {
         logger.info(`Total de chats a extraer: ${targetChats.length}`);
         await db.updateExtractionRun(runId, { total_chats: targetChats.length, status: 'running' });
 
-        // Verificar checkpoint
-        const alreadyExtracted = await db.getExtractedChatIds();
+        // Verificar checkpoint (salvo --force)
+        const alreadyExtracted = options.force
+            ? new Set()
+            : await db.getExtractedChatIds();
+
+        if (options.force) {
+            logger.info(`⚙️  --force: ignorando checkpoint. Borrando registros previos de los chats objetivo...`);
+            for (const chat of targetChats) {
+                const deleted = await db.deleteConversation(chat.jid);
+                if (deleted > 0) {
+                    logger.info(`   🗑️  ${chat.name}: ${deleted} registro(s) previos eliminados`);
+                }
+            }
+        } else {
+            logger.info(`📌 Checkpoint: ${alreadyExtracted.size} chats ya extraídos previamente`);
+        }
 
         let successCount = 0;
         let failCount = 0;
@@ -426,7 +440,7 @@ async function runExtractMode(options = {}) {
             const progress = `[${i + 1}/${targetChats.length}]`;
 
             if (alreadyExtracted.has(chat.jid)) {
-                logger.info(`${progress} ⏭️  ${chat.name}: ya extraído (checkpoint)`);
+                logger.info(`${progress} ⏭️  ${chat.name}: ya extraído (checkpoint). Usa --force para re-extraer.`);
                 continue;
             }
 
@@ -535,6 +549,7 @@ async function main() {
     const limit = args.limit ? parseInt(args.limit, 10) : null;
     const phone = args.phone ? String(args.phone).replace(/[^0-9]/g, '') : null;
     const skipMedia = !!args['skip-media'] || !!args.skipMedia;
+    const force = !!args.force;
 
     if (args.limit && (!Number.isFinite(limit) || limit <= 0)) {
         logger.error(`Valor inválido para --limit: ${args.limit}`);
@@ -550,6 +565,7 @@ async function main() {
     if (limit) logger.info(`  Límite: ${limit} chats`);
     if (phone) logger.info(`  Teléfono: ${phone}`);
     if (skipMedia) logger.info(`  --skip-media activo: solo textos, sin descargar audios/imágenes`);
+    if (force) logger.info(`  --force activo: ignora checkpoint y borra registros previos del chat`);
     logger.info('══════════════════════════════════════════════');
 
     // Conectar a BD
@@ -576,7 +592,7 @@ async function main() {
             await runTestMode();
             break;
         case 'extract':
-            await runExtractMode({ limit, phone });
+            await runExtractMode({ limit, phone, force });
             break;
         default:
             logger.error(`Modo desconocido: ${mode}`);

@@ -50,7 +50,14 @@ class Extractor {
         const contactNumber = jid.replace('@s.whatsapp.net', '');
 
         try {
+            logger.info(`  🔍 ${chatName}: ${messages.length} mensajes sincronizados del Store`);
+
             const deduped = this._deduplicateMessages(messages);
+            const dupSkipped = messages.length - deduped.length;
+            if (dupSkipped > 0) {
+                logger.info(`     Deduplicados: ${deduped.length} únicos (${dupSkipped} duplicados descartados)`);
+            }
+
             const sorted = deduped.sort((a, b) =>
                 Number(a.messageTimestamp || 0) - Number(b.messageTimestamp || 0)
             );
@@ -64,9 +71,18 @@ class Extractor {
             let firstMessageAt = null;
             let lastMessageAt = null;
 
+            // Contadores de por qué se descartan mensajes
+            const filtered = {
+                noContent: 0,
+                noUnwrap: 0,
+                typeOther: 0,
+                textEmpty: 0,
+                processError: 0,
+            };
+
             for (const msg of sorted) {
                 try {
-                    const processed = this.processMessageMetadata(msg, jid, contactNumber);
+                    const processed = this.processMessageMetadata(msg, jid, contactNumber, filtered);
                     if (!processed) continue;
 
                     processedMessages.push(processed);
@@ -88,9 +104,18 @@ class Extractor {
                         });
                     }
                 } catch (msgError) {
+                    filtered.processError++;
                     logger.warn(`  ⚠️  Error procesando mensaje ${msg.key?.id}: ${msgError.message}`);
                 }
             }
+
+            // Desglose detallado de filtros
+            logger.info(
+                `     Filtros: ${processedMessages.length} mantenidos | ` +
+                `${filtered.noContent} sin-content | ${filtered.noUnwrap} sin-unwrap | ` +
+                `${filtered.typeOther} tipo-other | ${filtered.textEmpty} texto-vacío | ` +
+                `${filtered.processError} errores`
+            );
 
             if (processedMessages.length === 0) {
                 logger.info(`  ⏭️  ${chatName}: 0 mensajes procesables`);
@@ -98,7 +123,7 @@ class Extractor {
             }
 
             logger.info(
-                `  📝 ${chatName}: ${processedMessages.length} msgs ` +
+                `  📝 ${chatName}: ${processedMessages.length} msgs a guardar ` +
                 `(${mediaQueue.length} media${this.skipMedia ? ', --skip-media' : ''})`
             );
 
@@ -136,7 +161,20 @@ class Extractor {
                 raw_data_path: rawPath,
             });
 
-            await this.db.saveMessages(convId, processedMessages);
+            // Guardar mensajes con diagnóstico
+            logger.info(`  💾 Insertando ${processedMessages.length} mensajes en BD...`);
+            const saveStats = await this.db.saveMessages(convId, processedMessages);
+            logger.info(
+                `     INSERT: ${saveStats.inserted} nuevos, ` +
+                `${saveStats.skipped} duplicados/existentes, ` +
+                `${saveStats.errors.length} errores`
+            );
+            if (saveStats.inserted === 0 && processedMessages.length > 0) {
+                logger.warn(
+                    `  ⚠️  ATENCIÓN: 0 mensajes insertados de ${processedMessages.length} procesados. ` +
+                    `Revisar errores arriba.`
+                );
+            }
 
             // ── FASE 2: descargar media en paralelo ──
             if (this.skipMedia) {
@@ -273,12 +311,12 @@ class Extractor {
     }
 
     // ─── PROCESAR METADATA DE MENSAJE (sin descargar media) ──
-    processMessageMetadata(msg, jid, contactNumber) {
+    processMessageMetadata(msg, jid, contactNumber, filtered = {}) {
         const content = msg.message;
-        if (!content) return null;
+        if (!content) { filtered.noContent = (filtered.noContent || 0) + 1; return null; }
 
         const unwrapped = this._unwrapMessage(content);
-        if (!unwrapped) return null;
+        if (!unwrapped) { filtered.noUnwrap = (filtered.noUnwrap || 0) + 1; return null; }
 
         const timestamp = msg.messageTimestamp
             ? new Date(Number(msg.messageTimestamp) * 1000)
@@ -287,13 +325,21 @@ class Extractor {
         const isFromMe = msg.key?.fromMe || false;
         const sender = isFromMe ? 'asesor' : 'lead';
         const senderPhone = isFromMe ? 'asesor' : formatPhone(contactNumber);
-        const senderName = msg.pushName || (isFromMe ? 'Asesor' : contactNumber);
+        // sender_name es VARCHAR(255) en el schema — truncar para evitar rollback
+        let senderName = msg.pushName || (isFromMe ? 'Asesor' : contactNumber);
+        if (senderName && senderName.length > 255) senderName = senderName.substring(0, 255);
 
         const type = this.getMessageType(unwrapped);
         const body = this.getMessageBody(unwrapped);
 
-        if (type === 'text' && !body) return null;
-        if (type === 'other') return null;
+        if (type === 'text' && !body) {
+            filtered.textEmpty = (filtered.textEmpty || 0) + 1;
+            return null;
+        }
+        if (type === 'other') {
+            filtered.typeOther = (filtered.typeOther || 0) + 1;
+            return null;
+        }
 
         const ctxInfo = this._getContextInfo(unwrapped);
 
