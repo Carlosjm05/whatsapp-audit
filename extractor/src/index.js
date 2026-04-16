@@ -2,12 +2,51 @@
 // WHATSAPP EXTRACTOR — PUNTO DE ENTRADA
 // ══════════════════════════════════════════════════════════════
 
+const fs = require('fs');
+const path = require('path');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const { createLogger } = require('./logger');
 const { Database } = require('./database');
 const { Extractor } = require('./extractor');
 const { sleep, parseArgs } = require('./utils');
+
+const SESSION_PATH = '/app/.wwebjs_auth';
+
+// ─── LIMPIEZA DE LOCK FILES DE CHROMIUM ─────────────────────
+// Si el extractor muere abruptamente, Chromium deja archivos
+// SingletonLock/SingletonSocket/SingletonCookie en el user-data-dir
+// que impiden el siguiente arranque. Los borramos antes de lanzar.
+function cleanupChromiumLocks(rootPath) {
+    const LOCK_NAMES = new Set(['SingletonLock', 'SingletonSocket', 'SingletonCookie']);
+    let removed = 0;
+    const walk = (dir) => {
+        let entries;
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch (err) {
+            return;
+        }
+        for (const entry of entries) {
+            const full = path.join(dir, entry.name);
+            if (LOCK_NAMES.has(entry.name)) {
+                try {
+                    fs.rmSync(full, { force: true });
+                    logger.info(`🧹 Lock residual eliminado: ${full}`);
+                    removed++;
+                } catch (err) {
+                    logger.warn(`No se pudo borrar ${full}: ${err.message}`);
+                }
+            } else if (entry.isDirectory() && !entry.isSymbolicLink()) {
+                walk(full);
+            }
+        }
+    };
+    walk(rootPath);
+    if (removed === 0) {
+        logger.info('🧹 No había lock files de Chromium pendientes.');
+    }
+}
 
 const logger = createLogger('main');
 
@@ -29,9 +68,11 @@ let isShuttingDown = false;
 
 // ─── INICIALIZAR CLIENTE DE WHATSAPP ────────────────────────
 function createWhatsAppClient() {
+    cleanupChromiumLocks(SESSION_PATH);
+
     const client = new Client({
         authStrategy: new LocalAuth({
-            dataPath: '/app/.wwebjs_auth'
+            dataPath: SESSION_PATH
         }),
         puppeteer: {
             headless: true,
@@ -47,6 +88,7 @@ function createWhatsAppClient() {
                 '--disable-gpu',
                 '--single-process',
                 '--disable-extensions',
+                '--disable-features=LockProfileCookieDatabase',
             ],
         },
         webVersionCache: {
