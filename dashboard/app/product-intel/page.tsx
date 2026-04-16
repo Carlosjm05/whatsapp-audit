@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { fetchApi } from '@/lib/api';
-import type { ProductIntel } from '@/types/api';
+import type { ProductIntel, ProjectConversions } from '@/types/api';
 import PageHeader from '@/components/PageHeader';
 import { ChartCard, ChartBar, ChartPie } from '@/components/Charts';
 import { ErrorState } from '@/components/LoadingState';
@@ -31,7 +31,7 @@ export default function ProductIntelPage() {
     };
   }, []);
 
-  const projectColumns: Column<{ project: string; leads: number; conversions: number } & Record<string, unknown>>[] = [
+  const projectColumns: Column<ProjectConversions>[] = [
     { key: 'project', header: 'Proyecto', accessor: (r) => r.project, sortable: true },
     {
       key: 'leads',
@@ -121,11 +121,7 @@ export default function ProductIntelPage() {
             </h3>
             <DataTable
               columns={projectColumns}
-              rows={
-                (data.topProjects || []) as Array<
-                  { project: string; leads: number; conversions: number } & Record<string, unknown>
-                >
-              }
+              rows={data.topProjects || []}
               initialSortKey="leads"
               initialSortDir="desc"
               empty="Sin datos de proyectos."

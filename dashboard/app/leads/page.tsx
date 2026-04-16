@@ -55,7 +55,7 @@ export default function LeadsPage() {
     return Array.from(set).sort();
   }, [data]);
 
-  const columns: Column<RecoverableLead & Record<string, unknown>>[] = [
+  const columns: Column<RecoverableLead>[] = [
     {
       key: 'clientName',
       header: 'Cliente',
@@ -222,7 +222,7 @@ export default function LeadsPage() {
           </div>
           <DataTable
             columns={columns}
-            rows={(data?.items || []) as Array<RecoverableLead & Record<string, unknown>>}
+            rows={data?.items || []}
             onRowClick={(r) => router.push(`/leads/${r.id}`)}
             initialSortKey="recoveryProbability"
             initialSortDir="desc"

@@ -38,7 +38,7 @@ export default function AdvisorsPage() {
 
   const top3 = [...rows].sort((a, b) => b.overallScore - a.overallScore).slice(0, 3);
 
-  const columns: Column<AdvisorRanking & Record<string, unknown>>[] = [
+  const columns: Column<AdvisorRanking>[] = [
     { key: 'name', header: 'Asesor', accessor: (r) => r.name, sortable: true },
     {
       key: 'overallScore',
@@ -159,7 +159,7 @@ export default function AdvisorsPage() {
 
           <DataTable
             columns={columns}
-            rows={rows as Array<AdvisorRanking & Record<string, unknown>>}
+            rows={rows}
             onRowClick={(r) => router.push(`/advisors/${encodeURIComponent(r.name)}`)}
             initialSortKey="overallScore"
             initialSortDir="desc"

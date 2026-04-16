@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { fetchApi } from '@/lib/api';
-import type { CompetitorsIntel } from '@/types/api';
+import type { CompetitorsIntel, CompetitorMention } from '@/types/api';
 import PageHeader from '@/components/PageHeader';
 import DataTable, { Column } from '@/components/DataTable';
 import { ChartCard, ChartBar } from '@/components/Charts';
@@ -31,7 +31,7 @@ export default function CompetitorsPage() {
     };
   }, []);
 
-  const columns: Column<{ name: string; mentions: number; lostDeals: number } & Record<string, unknown>>[] = [
+  const columns: Column<CompetitorMention>[] = [
     { key: 'name', header: 'Competidor', accessor: (r) => r.name, sortable: true },
     {
       key: 'mentions',
@@ -64,11 +64,7 @@ export default function CompetitorsPage() {
           <div className="mb-6">
             <DataTable
               columns={columns}
-              rows={
-                (data.topCompetitors || []) as Array<
-                  { name: string; mentions: number; lostDeals: number } & Record<string, unknown>
-                >
-              }
+              rows={data.topCompetitors || []}
               initialSortKey="mentions"
               initialSortDir="desc"
               empty="Sin menciones a competidores."

@@ -5,16 +5,19 @@ export interface LoginResponse {
 }
 
 export interface FunnelStage {
+  [key: string]: unknown;
   stage: string;
   count: number;
 }
 
 export interface StatusBucket {
+  [key: string]: unknown;
   status: string;
   count: number;
 }
 
 export interface MonthlyVolume {
+  [key: string]: unknown;
   month: string;
   count: number;
 }
@@ -32,6 +35,7 @@ export interface OverviewResponse {
 }
 
 export interface RecoverableLead {
+  [key: string]: unknown;
   id: string;
   clientName: string;
   phone?: string;
@@ -81,7 +85,28 @@ export interface LeadDetail extends RecoverableLead {
   notes?: string;
 }
 
+export interface ChartItem {
+  [key: string]: unknown;
+}
+
+export interface ProjectLeads extends ChartItem {
+  project: string;
+  leads: number;
+}
+
+export interface MonthlyAdvisor extends ChartItem {
+  month: string;
+  leads: number;
+  conversions: number;
+}
+
+export interface TypeCount extends ChartItem {
+  type: string;
+  count: number;
+}
+
 export interface AdvisorRanking {
+  [key: string]: unknown;
   name: string;
   conversations: number;
   leads: number;
@@ -95,22 +120,48 @@ export interface AdvisorRanking {
 export interface AdvisorDetail extends AdvisorRanking {
   strengths?: string[];
   weaknesses?: string[];
-  topProjects?: { project: string; leads: number }[];
-  monthly?: { month: string; leads: number; conversions: number }[];
-  errorsByType?: { type: string; count: number }[];
+  topProjects?: ProjectLeads[];
+  monthly?: MonthlyAdvisor[];
+  errorsByType?: TypeCount[];
+}
+
+export interface RangeCount extends ChartItem {
+  range: string;
+  count: number;
+}
+
+export interface ZoneCount extends ChartItem {
+  zone: string;
+  count: number;
+}
+
+export interface ProjectConversions extends ChartItem {
+  project: string;
+  leads: number;
+  conversions: number;
+}
+
+export interface BedroomsCount extends ChartItem {
+  bedrooms: string;
+  count: number;
 }
 
 export interface ProductIntel {
-  budgetDistribution: { range: string; count: number }[];
-  topZones: { zone: string; count: number }[];
-  topProjects: { project: string; leads: number; conversions: number }[];
-  bedroomsDemand: { bedrooms: string; count: number }[];
-  propertyTypes: { type: string; count: number }[];
+  budgetDistribution: RangeCount[];
+  topZones: ZoneCount[];
+  topProjects: ProjectConversions[];
+  bedroomsDemand: BedroomsCount[];
+  propertyTypes: TypeCount[];
+}
+
+export interface BucketCount extends ChartItem {
+  bucket: string;
+  count: number;
 }
 
 export interface ErrorsIntel {
-  topErrors: { type: string; count: number }[];
-  responseTimeHistogram: { bucket: string; count: number }[];
+  topErrors: TypeCount[];
+  responseTimeHistogram: BucketCount[];
   followupStats: {
     withFollowup: number;
     withoutFollowup: number;
@@ -119,12 +170,24 @@ export interface ErrorsIntel {
   };
 }
 
+export interface CompetitorMention extends ChartItem {
+  name: string;
+  mentions: number;
+  lostDeals: number;
+}
+
+export interface ReasonCount extends ChartItem {
+  reason: string;
+  count: number;
+}
+
 export interface CompetitorsIntel {
-  topCompetitors: { name: string; mentions: number; lostDeals: number }[];
-  lossReasons: { reason: string; count: number }[];
+  topCompetitors: CompetitorMention[];
+  lossReasons: ReasonCount[];
 }
 
 export interface KnowledgeEntry {
+  [key: string]: unknown;
   id: string;
   entry_type: string;
   title: string;

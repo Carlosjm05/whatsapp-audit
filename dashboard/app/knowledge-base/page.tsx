@@ -59,7 +59,7 @@ export default function KnowledgeBasePage() {
     }
   }
 
-  const columns: Column<KnowledgeEntry & Record<string, unknown>>[] = [
+  const columns: Column<KnowledgeEntry>[] = [
     {
       key: 'entry_type',
       header: 'Tipo',
@@ -136,7 +136,7 @@ export default function KnowledgeBasePage() {
       {!loading && !error && (
         <DataTable
           columns={columns}
-          rows={rows as Array<KnowledgeEntry & Record<string, unknown>>}
+          rows={rows}
           onRowClick={(r) => setSelected(r)}
           initialSortKey="createdAt"
           initialSortDir="desc"
