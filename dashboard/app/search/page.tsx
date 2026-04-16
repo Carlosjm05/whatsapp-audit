@@ -9,6 +9,7 @@ import { ErrorState } from '@/components/LoadingState';
 import { formatCOP, formatDate } from '@/lib/format';
 import { Search, Filter, X, Bookmark } from 'lucide-react';
 import type { RecoverableLead } from '@/types/api';
+import { useToast } from '@/components/Toast';
 
 interface SearchResponse {
   total: number;
@@ -93,12 +94,16 @@ function YesNoSelect({ label, value, onChange }: { label: string; value: string;
 
 export default function SearchPage() {
   const router = useRouter();
+  const toast = useToast();
   const [filters, setFilters] = useState<Filters>(INITIAL);
   const [data, setData] = useState<SearchResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedViews, setSavedViews] = useState<{ name: string; filters: Filters }[]>([]);
   const [showFilters, setShowFilters] = useState(true);
+  // Modal inline para nombrar vista guardada (reemplaza prompt() nativo).
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const [saveDialogName, setSaveDialogName] = useState('');
 
   // Load saved views from localStorage
   useEffect(() => {
@@ -138,11 +143,25 @@ export default function SearchPage() {
   }
 
   function saveView() {
-    const name = prompt('Nombre de la vista:');
-    if (!name) return;
+    setSaveDialogName('');
+    setSaveDialogOpen(true);
+  }
+
+  function confirmSaveView() {
+    const name = saveDialogName.trim();
+    if (!name) {
+      toast.error('El nombre no puede estar vacío');
+      return;
+    }
+    if (savedViews.some((v) => v.name === name)) {
+      toast.error('Ya existe una vista con ese nombre');
+      return;
+    }
     const next = [...savedViews, { name, filters }];
     setSavedViews(next);
     localStorage.setItem('saved_views', JSON.stringify(next));
+    setSaveDialogOpen(false);
+    toast.success(`Vista "${name}" guardada`);
   }
 
   function loadView(v: { name: string; filters: Filters }) {
@@ -310,6 +329,51 @@ export default function SearchPage() {
           )}
         </div>
       </div>
+
+      {/* Modal para guardar vista (reemplaza prompt() nativo) */}
+      {saveDialogOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="save-view-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSaveDialogOpen(false);
+          }}
+        >
+          <div className="bg-white rounded-xl shadow-xl p-6 max-w-sm w-full mx-4">
+            <h3 id="save-view-title" className="text-lg font-semibold mb-3">
+              Guardar vista
+            </h3>
+            <label htmlFor="view-name" className="label">
+              Nombre
+            </label>
+            <input
+              id="view-name"
+              className="input"
+              autoFocus
+              value={saveDialogName}
+              onChange={(e) => setSaveDialogName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') confirmSaveView();
+                if (e.key === 'Escape') setSaveDialogOpen(false);
+              }}
+              placeholder="Ej. Leads alta urgencia Bogotá"
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                className="btn-ghost"
+                onClick={() => setSaveDialogOpen(false)}
+              >
+                Cancelar
+              </button>
+              <button className="btn-primary" onClick={confirmSaveView}>
+                Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

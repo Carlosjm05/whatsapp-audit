@@ -117,7 +117,7 @@ export default function DataTable<T extends Record<string, unknown>>({
           <tbody className="divide-y divide-slate-100">
             {sorted.map((row, i) => (
               <tr
-                key={i}
+                key={(row.id as string | number) ?? (row.lead_id as string | number) ?? i}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
                 className={`${
                   onRowClick ? 'cursor-pointer hover:bg-slate-50' : ''

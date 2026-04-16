@@ -63,8 +63,9 @@ export default function LoginPage() {
           </p>
           <form onSubmit={onSubmit} className="space-y-4">
             <div>
-              <label className="label">Usuario</label>
+              <label htmlFor="login-username" className="label">Usuario</label>
               <input
+                id="login-username"
                 autoFocus
                 className="input"
                 value={username}
@@ -74,8 +75,9 @@ export default function LoginPage() {
               />
             </div>
             <div>
-              <label className="label">Contraseña</label>
+              <label htmlFor="login-password" className="label">Contraseña</label>
               <input
+                id="login-password"
                 className="input"
                 type="password"
                 value={password}

@@ -8,8 +8,10 @@ import DataTable, { Column } from '@/components/DataTable';
 import { ErrorState } from '@/components/LoadingState';
 import { formatDate } from '@/lib/format';
 import { Download, Search, Sparkles, Eye } from 'lucide-react';
+import { useToast } from '@/components/Toast';
 
 export default function KnowledgeBasePage() {
+  const toast = useToast();
   const [rows, setRows] = useState<KnowledgeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +59,7 @@ export default function KnowledgeBasePage() {
         `knowledge-base-${new Date().toISOString().slice(0, 10)}.json`
       );
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Error exportando');
+      toast.error(err instanceof Error ? err.message : 'Error exportando');
     }
   }
 
@@ -69,7 +71,7 @@ export default function KnowledgeBasePage() {
       );
       setDaptaPreview(res);
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Error generando preview');
+      toast.error(err instanceof Error ? err.message : 'Error generando preview');
     } finally {
       setDaptaLoading(false);
     }

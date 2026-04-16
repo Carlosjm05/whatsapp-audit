@@ -9,9 +9,11 @@ import DataTable, { Column } from '@/components/DataTable';
 import { ErrorState } from '@/components/LoadingState';
 import { formatCOP, formatDate, formatPct, priorityBadge } from '@/lib/format';
 import { Download, Filter, Search } from 'lucide-react';
+import { useToast } from '@/components/Toast';
 
 export default function LeadsPage() {
   const router = useRouter();
+  const toast = useToast();
   const [data, setData] = useState<RecoverableLeadsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -127,8 +129,9 @@ export default function LeadsPage() {
         `/api/export/recoverable-leads?${params.toString()}`,
         `leads-recuperables-${new Date().toISOString().slice(0, 10)}.csv`
       );
+      toast.success('Exportación iniciada');
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Error exportando');
+      toast.error(err instanceof Error ? err.message : 'Error exportando');
     }
   }
 
