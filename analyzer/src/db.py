@@ -7,49 +7,22 @@ from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 import psycopg2
 import psycopg2.extras
 
-
-# ─── SANITIZADORES DE ENUMS ──────────────────────────────────
-# Último guardián antes del INSERT: si el validador falló o Claude
-# devuelve algo raro, coerce al default en vez de violar CHECK.
-YES_NO_UNKNOWN_SET = {"si", "no", "desconocido"}
-LEAD_SOURCES_SET = {
-    "anuncio_facebook", "anuncio_instagram", "google_ads", "referido",
-    "busqueda_organica", "portal_inmobiliario", "otro", "desconocido",
-}
-PRODUCT_TYPES_SET = {
-    "lote", "arriendo", "compra_inmueble", "inversion", "local_comercial",
-    "bodega", "finca", "otro",
-}
-PURPOSES_SET = {
-    "vivienda_propia", "inversion", "negocio", "arrendar_terceros", "otro",
-    "no_especificado",
-}
-BUDGET_RANGES_SET = {
-    "menos_50m", "50_100m", "100_200m", "200_500m", "mas_500m",
-    "no_especificado",
-}
-PAYMENT_METHODS_SET = {
-    "contado", "credito_bancario", "leasing", "financiacion_directa",
-    "cuotas", "subsidio", "mixto", "no_especificado",
-}
-URGENCIES_SET = {
-    "comprar_ya", "1_3_meses", "3_6_meses", "mas_6_meses", "no_sabe",
-    "no_especificado",
-}
-DECISION_MAKERS_SET = {"si", "no_pareja", "no_socio", "no_familiar", "desconocido"}
-OBJECTION_TYPES_SET = {
-    "precio", "ubicacion", "confianza", "tiempo", "financiacion",
-    "competencia", "condiciones_inmueble", "documentacion", "otro",
-}
-RESPONSE_TIME_CATEGORIES_SET = {"excelente", "bueno", "regular", "malo", "critico"}
-FINAL_STATUSES_SET = {
-    "venta_cerrada", "visita_agendada", "negociacion_activa",
-    "seguimiento_activo", "se_enfrio", "ghosteado_por_asesor",
-    "ghosteado_por_lead", "descalificado", "nunca_calificado", "spam",
-    "numero_equivocado", "datos_insuficientes",
-}
-RECOVERY_PROB_SET = {"alta", "media", "baja", "no_aplica"}
-RECOVERY_PRIORITY_SET = {"esta_semana", "este_mes", "puede_esperar", "no_aplica"}
+# Enums compartidos con validator.py — única fuente de verdad.
+from .enums import (
+    BUDGET_RANGES as BUDGET_RANGES_SET,
+    DECISION_MAKERS as DECISION_MAKERS_SET,
+    FINAL_STATUSES as FINAL_STATUSES_SET,
+    LEAD_SOURCES as LEAD_SOURCES_SET,
+    OBJECTION_TYPES as OBJECTION_TYPES_SET,
+    PAYMENT_METHODS as PAYMENT_METHODS_SET,
+    PRODUCT_TYPES as PRODUCT_TYPES_SET,
+    PURPOSES as PURPOSES_SET,
+    RECOVERY_PRIORITY as RECOVERY_PRIORITY_SET,
+    RECOVERY_PROB as RECOVERY_PROB_SET,
+    RESPONSE_TIME_CATEGORIES as RESPONSE_TIME_CATEGORIES_SET,
+    URGENCIES as URGENCIES_SET,
+    YES_NO_UNKNOWN as YES_NO_UNKNOWN_SET,
+)
 
 
 def _safe_enum(value: Any, allowed: Set[str], default: Optional[str]) -> Optional[str]:

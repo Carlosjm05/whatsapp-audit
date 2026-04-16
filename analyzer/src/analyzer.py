@@ -32,6 +32,11 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5")
 NUM_WORKERS = int(os.getenv("ANALYZER_WORKERS", os.getenv("NUM_WORKERS", "2")))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 MIN_WORDS = 20
+# Umbral aproximado para truncar transcripts muy largos (en caracteres).
+# 4 chars/token × 180k tokens de contexto = ~720k. Dejamos margen para
+# system prompt (~3k tokens) + max_tokens salida (8k) + hints.
+# 600k chars ≈ 150k tokens de entrada — seguro para Sonnet 4.5.
+MAX_TRANSCRIPT_CHARS = 600_000
 
 INPUT_TOK_COST = 3.0 / 1_000_000
 OUTPUT_TOK_COST = 15.0 / 1_000_000
@@ -270,24 +275,59 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
     word_count = lead.get("word_count") or len(transcript.split())
 
     if word_count < MIN_WORDS:
-        log.info("lead %s insufficient (%d words)", lead_id, word_count)
+        log.info("lead %s datos insuficientes (%d palabras)", lead_id, word_count)
         db.write_insufficient(lead_id, conversation_id, _short_summary(transcript))
         return True, 0.0
+
+    # Truncar transcripts que exceden el límite de contexto. Preserva
+    # inicio (donde se revela la intención) y final (donde se define el
+    # outcome) — descarta el medio con una marca visible.
+    if len(transcript) > MAX_TRANSCRIPT_CHARS:
+        keep = MAX_TRANSCRIPT_CHARS // 2 - 200
+        transcript = (
+            transcript[:keep]
+            + "\n\n[... transcripción truncada por exceder límite de contexto ...]\n\n"
+            + transcript[-keep:]
+        )
+        log.warning("lead %s transcript truncado a %d chars", lead_id, len(transcript))
 
     computed = compute_metrics(transcript)
     metadata = {"phone": lead["phone"], "whatsapp_name": lead["whatsapp_name"]}
     hints = _format_hints(metadata, computed)
 
+    # Errores de red/API de Anthropic: retriables (volverá como pending).
+    # Errores de parseo/validación: NO retriables (se marca failed directo
+    # porque reintentar sin cambios va a dar el mismo error y cuesta $$).
     try:
         raw, cost = client.analyze(transcript, hints)
-    except (RetryError, Exception) as e:
+    except (
+        anthropic.APIConnectionError,
+        anthropic.APITimeoutError,
+        anthropic.RateLimitError,
+        anthropic.InternalServerError,
+        RetryError,
+    ) as e:
         rc = db.get_retry_count(lead_id) + 1
         status = "failed" if rc >= MAX_RETRIES else "pending"
         db.mark_status(lead_id, status, retry_count=rc, error=str(e)[:500])
-        log.error("lead %s analysis failed (retry %d/%d): %s",
+        log.error("lead %s error de API (retry %d/%d): %s",
                   lead_id, rc, MAX_RETRIES, e)
-        db.log_system("error", f"analysis failed lead {lead_id}",
+        db.log_system("error", f"api error lead {lead_id}",
                       {"lead_id": lead_id, "error": str(e)[:500], "retry": rc})
+        return False, 0.0
+    except (ValueError, json.JSONDecodeError, KeyError) as e:
+        # JSON malformado, estructura inesperada — no retriable.
+        db.mark_status(lead_id, "failed", retry_count=MAX_RETRIES,
+                       error=f"parseo JSON: {str(e)[:400]}")
+        log.error("lead %s JSON malformado (no retriable): %s", lead_id, e)
+        return False, 0.0
+    except Exception as e:
+        # Cualquier otra cosa: ya agotó los retries internos de tenacity.
+        rc = db.get_retry_count(lead_id) + 1
+        status = "failed" if rc >= MAX_RETRIES else "pending"
+        db.mark_status(lead_id, status, retry_count=rc, error=str(e)[:500])
+        log.error("lead %s error inesperado (retry %d/%d): %s",
+                  lead_id, rc, MAX_RETRIES, e)
         return False, 0.0
 
     try:

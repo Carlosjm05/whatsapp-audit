@@ -41,8 +41,8 @@ ESQUEMA OBLIGATORIO DEL JSON (devuelve exactamente estas claves):
     "budget_range": "menos_50m"|"50_100m"|"100_200m"|"200_500m"|"mas_500m"|"no_especificado",
     "payment_method": "contado"|"credito_bancario"|"leasing"|"financiacion_directa"|"cuotas"|"subsidio"|"mixto"|"no_especificado",
     "has_bank_preapproval": "si"|"no"|"desconocido",
-    "offers_trade_in": bool,                  // ¿Ofrece un inmueble como parte de pago?
-    "depends_on_selling": bool,               // ¿Depende de vender otro inmueble primero?
+    "offers_trade_in": "si"|"no"|"desconocido",    // ¿Ofrece un inmueble como parte de pago?
+    "depends_on_selling": "si"|"no"|"desconocido", // ¿Depende de vender otro inmueble primero?
     "positive_financial_signals": [string],   // Ej: "tiene preaprobación", "paga de contado"
     "negative_financial_signals": [string]    // Ej: "no tiene cuota inicial"
   },

@@ -4,46 +4,20 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-
-LEAD_SOURCES = {
-    "anuncio_facebook", "anuncio_instagram", "google_ads", "referido",
-    "busqueda_organica", "portal_inmobiliario", "otro", "desconocido",
-}
-PRODUCT_TYPES = {
-    "lote", "arriendo", "compra_inmueble", "inversion", "local_comercial",
-    "bodega", "finca", "otro",
-}
-PURPOSES = {
-    "vivienda_propia", "inversion", "negocio", "arrendar_terceros", "otro",
-    "no_especificado",
-}
-BUDGET_RANGES = {
-    "menos_50m", "50_100m", "100_200m", "200_500m", "mas_500m",
-    "no_especificado",
-}
-PAYMENT_METHODS = {
-    "contado", "credito_bancario", "leasing", "financiacion_directa",
-    "cuotas", "subsidio", "mixto", "no_especificado",
-}
-YES_NO_UNKNOWN = {"si", "no", "desconocido"}
-URGENCIES = {
-    "comprar_ya", "1_3_meses", "3_6_meses", "mas_6_meses", "no_sabe",
-    "no_especificado",
-}
-DECISION_MAKERS = {"si", "no_pareja", "no_socio", "no_familiar", "desconocido"}
-OBJECTION_TYPES = {
-    "precio", "ubicacion", "confianza", "tiempo", "financiacion",
-    "competencia", "condiciones_inmueble", "documentacion", "otro",
-}
-RESPONSE_TIME_CATEGORIES = {"excelente", "bueno", "regular", "malo", "critico"}
-FINAL_STATUSES = {
-    "venta_cerrada", "visita_agendada", "negociacion_activa",
-    "seguimiento_activo", "se_enfrio", "ghosteado_por_asesor",
-    "ghosteado_por_lead", "descalificado", "nunca_calificado", "spam",
-    "numero_equivocado", "datos_insuficientes",
-}
-RECOVERY_PROB = {"alta", "media", "baja", "no_aplica"}
-RECOVERY_PRIORITY = {"esta_semana", "este_mes", "puede_esperar", "no_aplica"}
+from .enums import (
+    BUDGET_RANGES,
+    DECISION_MAKERS,
+    FINAL_STATUSES,
+    LEAD_SOURCES,
+    OBJECTION_TYPES,
+    PAYMENT_METHODS,
+    PRODUCT_TYPES,
+    PURPOSES,
+    RECOVERY_PRIORITY,
+    RECOVERY_PROB,
+    URGENCIES,
+    YES_NO_UNKNOWN,
+)
 
 
 def _in(s: set, default=None):
@@ -59,6 +33,25 @@ def _in(s: set, default=None):
             return v
         return default
     return _v
+
+
+def _coerce_yes_no_unknown(v):
+    """Coacciona bool/string a 'si'/'no'/'desconocido'. El prompt ya pide
+    explícitamente strings, pero mantenemos esta coerción por si Claude
+    regresa al bool (defensa en profundidad)."""
+    if v is None:
+        return "desconocido"
+    if isinstance(v, bool):
+        return "si" if v else "no"
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"si", "sí", "yes", "true"}:
+            return "si"
+        if s in {"no", "false"}:
+            return "no"
+        if s in YES_NO_UNKNOWN:
+            return s
+    return "desconocido"
 
 
 class LeadCore(BaseModel):
@@ -93,9 +86,6 @@ class LeadFinancials(BaseModel):
     budget_range: Optional[str] = "no_especificado"
     payment_method: Optional[str] = "no_especificado"
     has_bank_preapproval: Optional[str] = "desconocido"
-    # offers_trade_in y depends_on_selling son VARCHAR('si'|'no'|'desconocido')
-    # en el schema, NO booleanos. Antes estaban como Optional[bool] y Pydantic
-    # enviaba False → Postgres → violación de CHECK constraint.
     offers_trade_in: Optional[str] = "desconocido"
     depends_on_selling: Optional[str] = "desconocido"
     positive_financial_signals: List[str] = Field(default_factory=list)
@@ -110,24 +100,8 @@ class LeadFinancials(BaseModel):
         lambda cls, v: _coerce_yes_no_unknown(v))
 
 
-def _coerce_yes_no_unknown(v):
-    """Coacciona bool/string a 'si'/'no'/'desconocido'. Claude a veces
-    devuelve booleanos para estos campos aunque le pidamos strings."""
-    if v is None:
-        return "desconocido"
-    if isinstance(v, bool):
-        return "si" if v else "no"
-    if isinstance(v, str):
-        s = v.strip().lower()
-        if s in {"si", "sí", "yes", "true"}: return "si"
-        if s in {"no", "false"}: return "no"
-        if s in YES_NO_UNKNOWN:
-            return s
-    return "desconocido"
-
-
 class LeadIntent(BaseModel):
-    intent_score: int = 1
+    intent_score: int = 5
     intent_justification: Optional[str] = None
     urgency: Optional[str] = "no_especificado"
     high_urgency_signals: List[str] = Field(default_factory=list)
@@ -141,8 +115,10 @@ class LeadIntent(BaseModel):
     @field_validator("intent_score")
     @classmethod
     def _score_range(cls, v):
-        if v < 1: return 1
-        if v > 10: return 10
+        if v < 1:
+            return 1
+        if v > 10:
+            return 10
         return v
 
 
@@ -164,11 +140,9 @@ class Objection(BaseModel):
 
 
 class ConversationMetrics(BaseModel):
-    total_messages: int = 0
-    advisor_messages: int = 0
-    lead_messages: int = 0
-    advisor_audios: int = 0
-    lead_audios: int = 0
+    """Solo los campos que el prompt pide a Claude. Los contadores
+    (total_messages, advisor_messages, etc.) los calcula `analyzer.py`
+    directamente a partir de los mensajes — no vienen en el JSON de Claude."""
     sent_project_info: bool = False
     sent_prices: bool = False
     asked_qualification_questions: bool = False
@@ -183,16 +157,13 @@ class ConversationMetrics(BaseModel):
 
 
 class ResponseTimes(BaseModel):
-    first_response_minutes: Optional[float] = None
-    avg_response_minutes: Optional[float] = None
-    longest_gap_hours: Optional[float] = None
+    """Solo lo que el prompt pide a Claude. Los campos
+    first_response_minutes, avg_response_minutes, longest_gap_hours,
+    advisor_active_hours y response_time_category los calcula
+    `analyzer.py` directamente."""
     unanswered_messages_count: int = 0
     lead_had_to_repeat: bool = False
     repeat_count: int = 0
-    advisor_active_hours: Optional[str] = None
-    response_time_category: Optional[str] = "regular"
-
-    _v_c = field_validator("response_time_category")(_in(RESPONSE_TIME_CATEGORIES, default="regular"))
 
 
 class AdvisorScores(BaseModel):
