@@ -15,12 +15,17 @@ const { downloadMediaMessage } = baileys;
 
 const logger = createLogger('extractor');
 
+const MEDIA_TYPES = new Set(['audio', 'image', 'video', 'document']);
+const MEDIA_CONCURRENCY = 5;
+const MEDIA_RETRY_DELAY_MS = 2000;
+
 class Extractor {
     constructor(sock, db, config) {
         this.sock = sock;
         this.db = db;
         this.config = config;
         this.dataDir = config.dataDir;
+        this.skipMedia = !!config.skipMedia;
         this.ensureDirectories();
     }
 
@@ -35,51 +40,52 @@ class Extractor {
         }
     }
 
-    // ─── EXTRAER UN CHAT COMPLETO ───────────────────────────
+    // ─── EXTRAER UN CHAT COMPLETO (2 fases) ─────────────────
+    // Fase 1: procesar todos los mensajes (metadata de texto)
+    //         y guardarlos en BD con media_path=null.
+    // Fase 2: descargar media en paralelo (worker pool) y
+    //         hacer UPDATE en BD con los paths. Las fallas
+    //         dejan media_path=null pero el texto queda intacto.
     async extractChat(jid, chatName, messages, runId) {
         const contactNumber = jid.replace('@s.whatsapp.net', '');
 
         try {
-            // Deduplicar por message ID y ordenar cronológicamente
             const deduped = this._deduplicateMessages(messages);
             const sorted = deduped.sort((a, b) =>
                 Number(a.messageTimestamp || 0) - Number(b.messageTimestamp || 0)
             );
 
-            // Filtrar mensajes de sistema
-            const filtered = sorted.filter(m => {
-                const type = this.getMessageType(m.message);
-                return type !== 'other' || (m.message?.conversation || m.message?.extendedTextMessage);
-            });
-
-            if (filtered.length === 0) {
-                logger.info(`  ⏭️  ${chatName}: sin mensajes procesables, saltando`);
-                return;
-            }
-
-            logger.info(`  📝 ${chatName}: ${filtered.length} mensajes a procesar`);
-
-            // Procesar cada mensaje
+            // ── FASE 1: procesar metadatos (sin descargar media) ──
             const processedMessages = [];
+            const mediaQueue = []; // { rawMsg, type, messageId }
             let audioCount = 0;
             let imageCount = 0;
             let docCount = 0;
             let firstMessageAt = null;
             let lastMessageAt = null;
 
-            for (const msg of filtered) {
+            for (const msg of sorted) {
                 try {
-                    const processed = await this.processMessage(msg, jid, contactNumber);
-                    if (processed) {
-                        processedMessages.push(processed);
+                    const processed = this.processMessageMetadata(msg, jid, contactNumber);
+                    if (!processed) continue;
 
-                        if (processed.message_type === 'audio') audioCount++;
-                        if (processed.message_type === 'image') imageCount++;
-                        if (processed.message_type === 'document') docCount++;
+                    processedMessages.push(processed);
 
-                        const ts = new Date(processed.timestamp);
-                        if (!firstMessageAt || ts < firstMessageAt) firstMessageAt = ts;
-                        if (!lastMessageAt || ts > lastMessageAt) lastMessageAt = ts;
+                    if (processed.message_type === 'audio') audioCount++;
+                    if (processed.message_type === 'image') imageCount++;
+                    if (processed.message_type === 'document') docCount++;
+
+                    const ts = new Date(processed.timestamp);
+                    if (!firstMessageAt || ts < firstMessageAt) firstMessageAt = ts;
+                    if (!lastMessageAt || ts > lastMessageAt) lastMessageAt = ts;
+
+                    // Encolar media para fase 2
+                    if (MEDIA_TYPES.has(processed.message_type)) {
+                        mediaQueue.push({
+                            rawMsg: msg,
+                            type: processed.message_type,
+                            messageId: processed.message_id,
+                        });
                     }
                 } catch (msgError) {
                     logger.warn(`  ⚠️  Error procesando mensaje ${msg.key?.id}: ${msgError.message}`);
@@ -87,9 +93,14 @@ class Extractor {
             }
 
             if (processedMessages.length === 0) {
-                logger.info(`  ⏭️  ${chatName}: 0 mensajes procesados`);
+                logger.info(`  ⏭️  ${chatName}: 0 mensajes procesables`);
                 return;
             }
+
+            logger.info(
+                `  📝 ${chatName}: ${processedMessages.length} msgs ` +
+                `(${mediaQueue.length} media${this.skipMedia ? ', --skip-media' : ''})`
+            );
 
             // Guardar JSON crudo en disco
             const rawPath = path.join(this.dataDir, 'raw', `${sanitizeFilename(jid)}.json`);
@@ -107,10 +118,9 @@ class Extractor {
                 last_message_at: lastMessageAt?.toISOString(),
                 extracted_at: new Date().toISOString(),
             };
-
             fs.writeFileSync(rawPath, JSON.stringify(rawData, null, 2), 'utf8');
 
-            // Guardar en base de datos
+            // Guardar conversación + mensajes (sin media paths todavía)
             const convId = await this.db.saveConversation({
                 extraction_run_id: runId,
                 chat_id: jid,
@@ -128,7 +138,18 @@ class Extractor {
 
             await this.db.saveMessages(convId, processedMessages);
 
-            logger.info(`  ✅ ${chatName}: ${processedMessages.length} msgs, ${audioCount} audios, ${imageCount} imgs`);
+            // ── FASE 2: descargar media en paralelo ──
+            if (this.skipMedia) {
+                logger.info(`  ⏭️  Saltando descarga de ${mediaQueue.length} media (--skip-media)`);
+            } else if (mediaQueue.length > 0) {
+                const { ok, failed } = await this._downloadMediaBatch(mediaQueue, convId, jid);
+                logger.info(
+                    `  ✅ ${chatName}: ${processedMessages.length} msgs, ` +
+                    `media ${ok}/${mediaQueue.length} descargados (${failed} fallidos)`
+                );
+            } else {
+                logger.info(`  ✅ ${chatName}: ${processedMessages.length} msgs (sin media)`);
+            }
 
         } catch (error) {
             logger.error(`  ❌ Error en ${chatName}: ${error.message}`);
@@ -136,12 +157,126 @@ class Extractor {
         }
     }
 
-    // ─── PROCESAR UN MENSAJE INDIVIDUAL ─────────────────────
-    async processMessage(msg, jid, contactNumber) {
+    // ─── FASE 2: DESCARGA PARALELA DE MEDIA ────────────────
+    async _downloadMediaBatch(queue, convId, jid) {
+        logger.info(`  ⬇️  Descargando ${queue.length} media en paralelo (${MEDIA_CONCURRENCY} concurrentes)...`);
+        let cursor = 0;
+        let ok = 0;
+        let failed = 0;
+
+        const worker = async () => {
+            while (cursor < queue.length) {
+                const idx = cursor++;
+                const item = queue[idx];
+
+                const mediaInfo = await this._safeDownloadMedia(item.rawMsg, jid, item.type);
+                if (mediaInfo) {
+                    try {
+                        await this.db.updateMessageMedia(convId, item.messageId, mediaInfo);
+                        ok++;
+                    } catch (dbErr) {
+                        logger.warn(`  ⚠️  Error guardando media en BD: ${dbErr.message}`);
+                        failed++;
+                    }
+                } else {
+                    failed++;
+                }
+
+                // Log de progreso cada 20 descargas
+                if ((ok + failed) % 20 === 0) {
+                    logger.info(`     Media progreso: ${ok + failed}/${queue.length} (${ok} ok, ${failed} fallidos)`);
+                }
+            }
+        };
+
+        await Promise.all(
+            Array.from({ length: MEDIA_CONCURRENCY }, () => worker())
+        );
+
+        return { ok, failed };
+    }
+
+    // Descarga un media sin lanzar excepción. Retorna null en fallo.
+    // 1 reintento con 2s, llama updateMediaMessage para refrescar URLs.
+    async _safeDownloadMedia(msg, jid, mediaType) {
+        try {
+            return await this.downloadMedia(msg, jid, mediaType);
+        } catch (error) {
+            logger.warn(`  ⚠️  Media ${msg.key?.id} falló definitivamente: ${error.message}`);
+            return null;
+        }
+    }
+
+    // ─── DESCARGAR UNA MEDIA ───────────────────────────────
+    // Los URLs de media de WhatsApp expiran. downloadMediaMessage
+    // acepta reuploadRequest que pide URLs frescas cuando hay 403.
+    // Importante: hay que hacer .bind(sock) para no perder el this.
+    async downloadMedia(msg, jid, mediaType) {
+        const reuploadRequest = this.sock.updateMediaMessage.bind(this.sock);
+        const pinoSilent = P({ level: 'silent' });
+
+        const attemptDownload = async () => {
+            return downloadMediaMessage(
+                msg,
+                'buffer',
+                {},
+                {
+                    logger: pinoSilent,
+                    reuploadRequest,
+                }
+            );
+        };
+
+        let buffer;
+        try {
+            buffer = await attemptDownload();
+        } catch (err) {
+            // Un único reintento: intentar refrescar URLs manualmente antes.
+            logger.warn(`  ⚠️  Primer intento de descarga falló (${err.message}), refrescando URL...`);
+            await sleep(MEDIA_RETRY_DELAY_MS);
+            try {
+                await this.sock.updateMediaMessage(msg);
+            } catch (refreshErr) {
+                throw new Error(`updateMediaMessage falló: ${refreshErr.message}`);
+            }
+            buffer = await attemptDownload();
+        }
+
+        if (!buffer || buffer.length === 0) {
+            throw new Error('Buffer vacío');
+        }
+
+        const unwrapped = this._unwrapMessage(msg.message);
+        const mediaContent = unwrapped?.audioMessage
+            || unwrapped?.imageMessage
+            || unwrapped?.videoMessage
+            || unwrapped?.documentMessage
+            || unwrapped?.stickerMessage;
+
+        const mimetype = mediaContent?.mimetype || '';
+        const duration = mediaContent?.seconds || null;
+
+        const subDir = mediaType === 'audio' ? 'audios'
+            : mediaType === 'image' ? 'images' : 'documents';
+        const ext = this.getExtension(mimetype, mediaType);
+        const filename = `${sanitizeFilename(jid)}_${msg.key?.id || uuidv4()}${ext}`;
+        const filePath = path.join(this.dataDir, subDir, filename);
+
+        fs.writeFileSync(filePath, buffer);
+
+        return {
+            path: filePath,
+            size: buffer.length,
+            mimetype: mimetype,
+            duration: duration,
+        };
+    }
+
+    // ─── PROCESAR METADATA DE MENSAJE (sin descargar media) ──
+    processMessageMetadata(msg, jid, contactNumber) {
         const content = msg.message;
         if (!content) return null;
 
-        // Algunos mensajes wrappean el contenido real
         const unwrapped = this._unwrapMessage(content);
         if (!unwrapped) return null;
 
@@ -157,14 +292,12 @@ class Extractor {
         const type = this.getMessageType(unwrapped);
         const body = this.getMessageBody(unwrapped);
 
-        // Saltar mensajes vacíos de tipo text
         if (type === 'text' && !body) return null;
-        // Saltar tipos no interesantes
         if (type === 'other') return null;
 
         const ctxInfo = this._getContextInfo(unwrapped);
 
-        const processed = {
+        return {
             message_id: msg.key?.id || uuidv4(),
             timestamp: timestamp.toISOString(),
             sender,
@@ -180,94 +313,10 @@ class Extractor {
             is_reply: !!ctxInfo?.stanzaId,
             reply_to_id: ctxInfo?.stanzaId || null,
         };
-
-        // Descargar media si aplica
-        if (['audio', 'image', 'video', 'document'].includes(type)) {
-            try {
-                const mediaInfo = await this.downloadMedia(msg, jid, type);
-                if (mediaInfo) {
-                    processed.media_path = mediaInfo.path;
-                    processed.media_size_bytes = mediaInfo.size;
-                    processed.media_duration_sec = mediaInfo.duration;
-                    processed.media_mimetype = mediaInfo.mimetype;
-                }
-            } catch (mediaError) {
-                logger.warn(`  ⚠️  No se pudo descargar media: ${mediaError.message}`);
-            }
-        }
-
-        return processed;
-    }
-
-    // ─── DESCARGAR MEDIA ────────────────────────────────────
-    async downloadMedia(msg, jid, mediaType) {
-        const maxRetries = this.config.maxRetries;
-
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                const buffer = await downloadMediaMessage(
-                    msg,
-                    'buffer',
-                    {},
-                    {
-                        logger: P({ level: 'silent' }),
-                        reuploadRequest: this.sock.updateMediaMessage,
-                    }
-                );
-
-                if (!buffer || buffer.length === 0) {
-                    logger.warn(`  ⚠️  Media vacío para ${msg.key?.id}`);
-                    return null;
-                }
-
-                // Obtener metadatos del media
-                const unwrapped = this._unwrapMessage(msg.message);
-                const mediaContent = unwrapped?.audioMessage
-                    || unwrapped?.imageMessage
-                    || unwrapped?.videoMessage
-                    || unwrapped?.documentMessage
-                    || unwrapped?.stickerMessage;
-
-                const mimetype = mediaContent?.mimetype || '';
-                const duration = mediaContent?.seconds || null;
-
-                const subDir = mediaType === 'audio' ? 'audios'
-                    : mediaType === 'image' ? 'images' : 'documents';
-                const ext = this.getExtension(mimetype, mediaType);
-                const filename = `${sanitizeFilename(jid)}_${msg.key?.id || uuidv4()}${ext}`;
-                const filePath = path.join(this.dataDir, subDir, filename);
-
-                fs.writeFileSync(filePath, buffer);
-
-                // Rate limit
-                const delay = this.randomBetween(
-                    this.config.mediaDelayMin,
-                    this.config.mediaDelayMax
-                );
-                await sleep(delay);
-
-                return {
-                    path: filePath,
-                    size: buffer.length,
-                    mimetype: mimetype,
-                    duration: duration,
-                };
-
-            } catch (error) {
-                if (attempt < maxRetries) {
-                    logger.warn(`  ⚠️  Reintento ${attempt}/${maxRetries} descarga media: ${error.message}`);
-                    await sleep(5000 * attempt);
-                } else {
-                    throw error;
-                }
-            }
-        }
-        return null;
     }
 
     // ─── UTILIDADES ─────────────────────────────────────────
 
-    // Baileys a veces envuelve el contenido en viewOnceMessage, ephemeralMessage, etc.
     _unwrapMessage(content) {
         if (!content) return null;
         return content.viewOnceMessage?.message
@@ -355,10 +404,6 @@ class Extractor {
         };
 
         return fallbackMap[fallbackType] || '.bin';
-    }
-
-    randomBetween(min, max) {
-        return Math.floor(Math.random() * (max - min + 1)) + min;
     }
 }
 

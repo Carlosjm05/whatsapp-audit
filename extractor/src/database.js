@@ -157,6 +157,25 @@ class Database {
         }
     }
 
+    async updateMessageMedia(conversationId, messageId, mediaInfo) {
+        await this.pool.query(
+            `UPDATE messages SET
+                media_path = $1,
+                media_size_bytes = $2,
+                media_duration_sec = $3,
+                media_mimetype = $4
+             WHERE conversation_id = $5 AND message_id = $6`,
+            [
+                mediaInfo.path,
+                mediaInfo.size,
+                mediaInfo.duration,
+                mediaInfo.mimetype,
+                conversationId,
+                messageId,
+            ]
+        );
+    }
+
     // ─── TRANSCRIPTIONS ─────────────────────────────────────
     async createPendingTranscription(messageId, conversationId, audioDuration) {
         await this.pool.query(

@@ -534,17 +534,22 @@ async function main() {
     const mode = args.mode || 'extract';
     const limit = args.limit ? parseInt(args.limit, 10) : null;
     const phone = args.phone ? String(args.phone).replace(/[^0-9]/g, '') : null;
+    const skipMedia = !!args['skip-media'] || !!args.skipMedia;
 
     if (args.limit && (!Number.isFinite(limit) || limit <= 0)) {
         logger.error(`Valor inválido para --limit: ${args.limit}`);
         process.exit(1);
     }
 
+    // Propagar skipMedia al CONFIG para que Extractor lo lea
+    CONFIG.skipMedia = skipMedia;
+
     logger.info('══════════════════════════════════════════════');
     logger.info('  WHATSAPP AUDIT SYSTEM — EXTRACTOR (Baileys)');
     logger.info(`  Modo: ${mode.toUpperCase()}`);
     if (limit) logger.info(`  Límite: ${limit} chats`);
     if (phone) logger.info(`  Teléfono: ${phone}`);
+    if (skipMedia) logger.info(`  --skip-media activo: solo textos, sin descargar audios/imágenes`);
     logger.info('══════════════════════════════════════════════');
 
     // Conectar a BD
