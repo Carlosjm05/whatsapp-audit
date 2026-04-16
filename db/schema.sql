@@ -183,11 +183,11 @@ CREATE TABLE lead_financials (
                                 CHECK (budget_range IN ('menos_50m', '50_100m', '100_200m', '200_500m', 'mas_500m', 'no_especificado')),
     payment_method              VARCHAR(50)
                                 CHECK (payment_method IN ('contado', 'credito_bancario', 'leasing', 'financiacion_directa', 'cuotas', 'subsidio', 'mixto', 'no_especificado')),
-    has_bank_preapproval        VARCHAR(10) DEFAULT 'desconocido'
+    has_bank_preapproval        VARCHAR(32) DEFAULT 'desconocido'
                                 CHECK (has_bank_preapproval IN ('si', 'no', 'desconocido')),
-    offers_trade_in             VARCHAR(10) DEFAULT 'desconocido'
+    offers_trade_in             VARCHAR(32) DEFAULT 'desconocido'
                                 CHECK (offers_trade_in IN ('si', 'no', 'desconocido')),
-    depends_on_selling          VARCHAR(10) DEFAULT 'desconocido'
+    depends_on_selling          VARCHAR(32) DEFAULT 'desconocido'
                                 CHECK (depends_on_selling IN ('si', 'no', 'desconocido')),
     positive_financial_signals  TEXT[],
     negative_financial_signals  TEXT[],
@@ -207,7 +207,7 @@ CREATE TABLE lead_intent (
                             CHECK (urgency IN ('comprar_ya', '1_3_meses', '3_6_meses', 'mas_6_meses', 'no_sabe', 'no_especificado')),
     high_urgency_signals    TEXT[],
     low_urgency_signals     TEXT[],
-    is_decision_maker       VARCHAR(20) DEFAULT 'desconocido'
+    is_decision_maker       VARCHAR(32) DEFAULT 'desconocido'
                             CHECK (is_decision_maker IN ('si', 'no_pareja', 'no_socio', 'no_familiar', 'desconocido')),
     comparing_competitors   BOOLEAN DEFAULT false,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -324,7 +324,7 @@ CREATE TABLE conversation_outcomes (
     loss_reason                 TEXT,
     loss_point_description      TEXT,
     is_recoverable              BOOLEAN DEFAULT false,
-    recovery_probability        VARCHAR(10)
+    recovery_probability        VARCHAR(32)
                                 CHECK (recovery_probability IN ('alta', 'media', 'baja', 'no_aplica')),
     recovery_reason             TEXT,
     not_recoverable_reason      TEXT,
