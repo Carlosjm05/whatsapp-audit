@@ -106,13 +106,15 @@ def _redis_ping() -> bool:
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
 def health() -> HealthResponse:
-    # El health detallado se expone solo a quien llega al puerto interno
-    # del contenedor (nginx no proxya /health a internet por defecto).
-    return HealthResponse(
-        status="ok",
-        db="ok" if db_module.ping() else "down",
-        redis="ok" if _redis_ping() else "down",
-    )
+    """Probe para contenedor/orquestador. Devuelve 200 con {"status":"ok"}
+    solo si DB y Redis responden; si alguno falla, 503. No expone detalles
+    para evitar reconocimiento."""
+    db_ok = db_module.ping()
+    redis_ok = _redis_ping()
+    if not (db_ok and redis_ok):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="servicio degradado")
+    return HealthResponse(status="ok")
 
 
 @app.get("/", tags=["meta"])

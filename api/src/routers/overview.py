@@ -81,13 +81,13 @@ def get_overview(_user: str = Depends(get_current_user)) -> OverviewResponse:
     avg_advisor_row = fetch_one("SELECT AVG(overall_score)::float AS v FROM advisor_scores WHERE overall_score IS NOT NULL")
 
     return OverviewResponse(
-        totalConversations=total_conversations,
-        totalLeads=total_leads,
+        total_conversations=total_conversations,
+        total_leads=total_leads,
         funnel=funnel,
-        statusDistribution=status_distribution,
-        monthlyVolume=monthly_volume,
-        recoverableCount=recoverable_count,
-        totalRecoverableEstimatedValue=total_recoverable_estimated_value,
-        avgIntentScore=(avg_intent_row["v"] if avg_intent_row else None),
-        avgAdvisorScore=(avg_advisor_row["v"] if avg_advisor_row else None),
+        status_distribution=status_distribution,
+        monthly_volume=monthly_volume,
+        recoverable_count=recoverable_count,
+        total_recoverable_estimated_value=total_recoverable_estimated_value,
+        avg_intent_score=(avg_intent_row["v"] if avg_intent_row else None),
+        avg_advisor_score=(avg_advisor_row["v"] if avg_advisor_row else None),
     )

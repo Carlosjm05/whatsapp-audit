@@ -56,53 +56,51 @@ export default function OverviewPage() {
       {error && <ErrorState message={error} />}
 
       {!loading && !error && data && (() => {
-        // El API puede devolver funnel como objeto {contactado, calificado,
-        // visita, venta} en vez del array que los Charts esperan. Convertir.
+        // El API devuelve funnel como objeto {contactado, calificado,
+        // visita, venta}; los Charts esperan array [{stage, count}].
         const funnelRaw = data.funnel;
-        const funnel: FunnelStage[] = Array.isArray(funnelRaw)
-          ? funnelRaw
-          : funnelRaw && typeof funnelRaw === 'object'
-            ? Object.entries(funnelRaw)
-                .filter(([, v]) => typeof v === 'number')
-                .map(([stage, count]) => ({ stage, count: count as number }))
-            : [];
-        const statusDist = safeArray<StatusBucket>(data.statusDistribution);
-        const monthly = safeArray<MonthlyVolume>(data.monthlyVolume);
+        const funnel: FunnelStage[] = funnelRaw && typeof funnelRaw === 'object'
+          ? Object.entries(funnelRaw)
+              .filter(([, v]) => typeof v === 'number')
+              .map(([stage, count]) => ({ stage, count: count as number }))
+          : [];
+        const statusDist = safeArray<StatusBucket>(data.status_distribution);
+        const monthly = safeArray<MonthlyVolume>(data.monthly_volume);
         return <>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             <KpiCard
               label="Conversaciones analizadas"
-              value={formatNumber(data.totalConversations ?? 0)}
+              value={formatNumber(data.total_conversations ?? 0)}
               icon={<MessageSquare className="w-5 h-5" />}
             />
             <KpiCard
               label="Leads identificados"
-              value={formatNumber(data.totalLeads ?? 0)}
+              value={formatNumber(data.total_leads ?? 0)}
               icon={<Users className="w-5 h-5" />}
               tone="positive"
             />
             <KpiCard
               label="Leads recuperables"
-              value={formatNumber(data.recoverableCount ?? 0)}
+              value={formatNumber(data.recoverable_count ?? 0)}
               sub="Oportunidades activas a retomar"
               icon={<TrendingUp className="w-5 h-5" />}
               tone="warning"
             />
             <KpiCard
               label="Valor estimado recuperable"
-              value={formatCOP(data.totalRecoverableEstimatedValue ?? 0)}
+              value={formatCOP(data.total_recoverable_estimated_value ?? 0)}
               icon={<PiggyBank className="w-5 h-5" />}
               tone="positive"
             />
             <KpiCard
               label="Intención promedio"
-              value={`${formatNumber(data.avgIntentScore ?? 0, 1)} / 10`}
+              value={`${formatNumber(data.avg_intent_score ?? 0, 1)} / 10`}
               sub="Score 1-10 de intención de compra"
               icon={<Sparkles className="w-5 h-5" />}
             />
             <KpiCard
               label="Score promedio asesor"
-              value={`${formatNumber(data.avgAdvisorScore ?? 0, 1)} / 10`}
+              value={`${formatNumber(data.avg_advisor_score ?? 0, 1)} / 10`}
               sub="Calidad ponderada de atención"
               icon={<UserCheck className="w-5 h-5" />}
             />
@@ -126,7 +124,7 @@ export default function OverviewPage() {
             >
               <ChartPie
                 data={statusDist}
-                nameKey="status"
+                nameKey="final_status"
                 valueKey="count"
               />
             </ChartCard>
@@ -154,7 +152,7 @@ export default function OverviewPage() {
             >
               <ChartBar
                 data={statusDist}
-                xKey="status"
+                xKey="final_status"
                 yKey="count"
                 color="#2563eb"
               />

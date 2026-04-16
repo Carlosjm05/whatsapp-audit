@@ -12,7 +12,7 @@ export interface FunnelStage {
 
 export interface StatusBucket {
   [key: string]: unknown;
-  status: string;
+  final_status: string;
   count: number;
 }
 
@@ -22,16 +22,25 @@ export interface MonthlyVolume {
   count: number;
 }
 
+// El backend devuelve el funnel como objeto {contactado, calificado,
+// visita, venta}; los Charts esperan array. El consumer convierte.
+export interface FunnelCounts {
+  contactado: number;
+  calificado: number;
+  visita: number;
+  venta: number;
+}
+
 export interface OverviewResponse {
-  totalConversations: number;
-  totalLeads: number;
-  funnel: FunnelStage[];
-  statusDistribution: StatusBucket[];
-  monthlyVolume: MonthlyVolume[];
-  recoverableCount: number;
-  totalRecoverableEstimatedValue: number;
-  avgIntentScore: number;
-  avgAdvisorScore: number;
+  total_conversations: number;
+  total_leads: number;
+  funnel: FunnelCounts;
+  status_distribution: StatusBucket[];
+  monthly_volume: MonthlyVolume[];
+  recoverable_count: number;
+  total_recoverable_estimated_value: number;
+  avg_intent_score: number | null;
+  avg_advisor_score: number | null;
 }
 
 export interface RecoverableLead {
