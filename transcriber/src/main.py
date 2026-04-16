@@ -85,25 +85,40 @@ def transcribe_audio(client, audio_path):
             timestamp_granularities=["segment"]
         )
     
-    # Calcular score de confianza promedio
+    # Calcular score de confianza promedio.
+    # El SDK de OpenAI v1+ devuelve segments como objetos pydantic
+    # (TranscriptionSegment), no dicts — hay que usar getattr, no .get().
     confidence = 0.95  # Default alto para Whisper
-    if hasattr(response, 'segments') and response.segments:
-        avg_no_speech = sum(
-            seg.get('no_speech_prob', 0) for seg in response.segments
-        ) / len(response.segments)
-        # Invertir: menor probabilidad de no-speech = mayor confianza
-        confidence = max(0.0, min(1.0, 1.0 - avg_no_speech))
-    
+    try:
+        segments = getattr(response, 'segments', None) or []
+        probs = []
+        for seg in segments:
+            if isinstance(seg, dict):
+                prob = seg.get('no_speech_prob', 0)
+            else:
+                prob = getattr(seg, 'no_speech_prob', 0)
+            if prob is not None:
+                probs.append(float(prob))
+        if probs:
+            avg_no_speech = sum(probs) / len(probs)
+            # Invertir: menor probabilidad de no-speech = mayor confianza
+            confidence = max(0.0, min(1.0, 1.0 - avg_no_speech))
+    except Exception as e:
+        logger.warning(f"  No se pudo calcular confianza, usando default: {e}")
+
+    duration = float(getattr(response, 'duration', 0) or 0)
+    language = getattr(response, 'language', None) or 'es'
+    text = getattr(response, 'text', None) or ''
+
     # Calcular costo (~$0.006 USD por minuto)
-    duration_minutes = (response.duration or 0) / 60.0
-    cost_usd = duration_minutes * 0.006
-    
+    cost_usd = (duration / 60.0) * 0.006
+
     return {
-        'text': response.text or '',
+        'text': text,
         'confidence': round(confidence, 3),
-        'duration': response.duration,
+        'duration': duration,
         'cost_usd': round(cost_usd, 6),
-        'language': response.language or 'es',
+        'language': language,
     }
 
 
