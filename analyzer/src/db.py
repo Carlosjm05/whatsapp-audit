@@ -693,28 +693,28 @@ def fetch_top_unanswered(limit: int = 50) -> List[Dict[str, Any]]:
         return [dict(r) for r in cur.fetchall()]
 
 
-def fetch_signal_source_leads(signal_column: str, signal_text: str) -> List[str]:
-    """Devuelve lead_ids cuyos arrays contienen el signal dado."""
-    # Columna validada contra whitelist:
-    allowed = {
-        "positive_financial_signals", "negative_financial_signals",
-    }
-    allowed_intent = {"high_urgency_signals", "low_urgency_signals"}
-    table = None
-    if signal_column in allowed:
-        table = "lead_financials"
-    elif signal_column in allowed_intent:
-        table = "lead_intent"
-    else:
-        return []
-    sql = (
-        f"SELECT lead_id FROM {table} "
-        f"WHERE %s = ANY({signal_column}) "
-        f"LIMIT 50"
-    )
+def fetch_ideal_responses(min_quality: int = 8, limit: int = 50) -> List[Dict[str, Any]]:
+    """Devuelve respuestas de asesor con calidad alta (>=8) para alimentar
+    la KB como entry_type='respuesta_ideal'. Útil para que Dapta replique
+    lo que ya funciona."""
     with cursor(commit=False) as cur:
-        cur.execute(sql, (signal_text,))
-        return [str(r["lead_id"]) for r in cur.fetchall()]
+        cur.execute(
+            """SELECT
+                 objection_type,
+                 advisor_response,
+                 MAX(response_quality) AS quality,
+                 COUNT(*) AS n,
+                 ARRAY_AGG(DISTINCT lead_id::text) AS leads
+               FROM lead_objections
+               WHERE advisor_response IS NOT NULL
+                 AND LENGTH(advisor_response) > 10
+                 AND response_quality >= %s
+               GROUP BY objection_type, advisor_response
+               ORDER BY quality DESC, n DESC
+               LIMIT %s""",
+            (min_quality, limit),
+        )
+        return [dict(r) for r in cur.fetchall()]
 
 
 def upsert_kb_entries(entries: List[Dict[str, Any]]) -> int:

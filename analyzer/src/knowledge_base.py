@@ -30,7 +30,7 @@ def build_knowledge_base() -> Dict[str, int]:
       - info_proyecto
     """
     leads = db.fetch_analyzed_for_kb()
-    log.info("building KB from %d analyzed leads", len(leads))
+    log.info("generando KB desde %d leads analizados", len(leads))
 
     entries: List[Dict[str, Any]] = []
 
@@ -101,6 +101,21 @@ def build_knowledge_base() -> Dict[str, int]:
             "source_leads": abandon_sources[sig][:20],
         })
 
+    # ─── 3b. Respuestas ideales del asesor (calidad >= 8) ──────
+    # Tomamos respuestas del asesor que obtuvieron score alto — útiles
+    # para que Dapta replique patrones que ya funcionan en el equipo.
+    top_responses = db.fetch_ideal_responses(min_quality=8, limit=40)
+    for r in top_responses:
+        entries.append({
+            "entry_type": "respuesta_ideal",
+            "category": r.get("objection_type"),
+            "content_text": r["advisor_response"][:1000],
+            "verbatim_examples": [r["advisor_response"][:1000]],
+            "frequency_count": int(r.get("n") or 1),
+            "ideal_response": r["advisor_response"][:1000],
+            "source_leads": (r.get("leads") or [])[:20],
+        })
+
     # ─── 4. Proyectos mencionados ──────────────────────────────
     project_counter: Counter = Counter()
     project_sources: Dict[str, List[str]] = defaultdict(list)
@@ -129,17 +144,20 @@ def build_knowledge_base() -> Dict[str, int]:
         "objeciones_comunes": sum(1 for e in entries if e["entry_type"] == "objecion_comun"),
         "senales_compra": sum(1 for e in entries if e["entry_type"] == "senal_compra"),
         "senales_abandono": sum(1 for e in entries if e["entry_type"] == "senal_abandono"),
+        "respuestas_ideales": sum(1 for e in entries if e["entry_type"] == "respuesta_ideal"),
         "info_proyectos": sum(1 for e in entries if e["entry_type"] == "info_proyecto"),
         "total_entries": written,
     }
 
     log.info(
-        "KB written: %d entries (%d preguntas, %d objeciones, %d compra, %d abandono, %d proyectos)",
+        "KB generada: %d entradas (%d preguntas, %d objeciones, "
+        "%d compra, %d abandono, %d resp. ideales, %d proyectos)",
         summary["total_entries"],
         summary["preguntas_frecuentes"],
         summary["objeciones_comunes"],
         summary["senales_compra"],
         summary["senales_abandono"],
+        summary["respuestas_ideales"],
         summary["info_proyectos"],
     )
     return summary

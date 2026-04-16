@@ -48,7 +48,7 @@ _shutdown = threading.Event()
 
 def _install_signals() -> None:
     def _h(signum, frame):
-        log.warning("received signal %s, draining workers", signum)
+        log.warning("señal %s recibida, drenando workers", signum)
         _shutdown.set()
     for s in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -132,17 +132,19 @@ def compute_metrics(text: str) -> Dict[str, Any]:
     if longest_gap_hours is not None:
         longest_gap_hours = round(longest_gap_hours, 2)
 
+    # Umbrales (minutos). El rango antiguo dejaba "malo" cubriendo 2h-24h,
+    # demasiado ancho para ser accionable.
     if first_response_minutes is None:
         cat = "critico"
     elif first_response_minutes <= 5:
         cat = "excelente"
     elif first_response_minutes <= 30:
         cat = "bueno"
-    elif first_response_minutes <= 120:
+    elif first_response_minutes <= 120:      # 30min - 2h
         cat = "regular"
-    elif first_response_minutes <= 60 * 24:
+    elif first_response_minutes <= 60 * 8:   # 2h - 8h
         cat = "malo"
-    else:
+    else:                                     # > 8h
         cat = "critico"
 
     hour_counts: Dict[int, int] = {}
@@ -187,7 +189,13 @@ def _format_hints(metadata: Dict[str, Any], computed: Dict[str, Any]) -> str:
 
 class ClaudeClient:
     def __init__(self) -> None:
-        self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "Falta ANTHROPIC_API_KEY en el entorno. Configúrala antes "
+                "de arrancar el analyzer."
+            )
+        self.client = anthropic.Anthropic(api_key=api_key)
         self.total_in = 0
         self.total_out = 0
         self.total_cache_read = 0
@@ -378,13 +386,13 @@ def run_analyze(limit: Optional[int] = None) -> Dict[str, Any]:
     # corrido (audios aparecen como [AUDIO SIN TRANSCRIBIR] en el texto).
     transcripts_created = db.ensure_unified_transcripts()
     if transcripts_created > 0:
-        log.info("generated %d missing unified_transcripts from messages",
+        log.info("generados %d unified_transcripts faltantes desde messages",
                  transcripts_created)
 
     registered = db.register_pending_leads()
-    log.info("registered %d new pending leads", registered)
+    log.info("%d nuevos leads pending registrados", registered)
     pending = db.fetch_pending_leads(limit=limit)
-    log.info("processing %d pending leads with %d workers",
+    log.info("procesando %d leads pending con %d workers",
              len(pending), NUM_WORKERS)
 
     client = ClaudeClient()
@@ -406,18 +414,19 @@ def run_analyze(limit: Optional[int] = None) -> Dict[str, Any]:
                     fail += 1
             except Exception as e:
                 fail += 1
-                log.exception("worker crashed: %s", e)
+                log.exception("worker cayó: %s", e)
 
     log.info(
-        "done: ok=%d failed=%d total_cost=$%.4f tokens in=%d out=%d cache_read=%d cache_write=%d",
+        "corrida completa: ok=%d fallidos=%d costo_total=$%.4f "
+        "tokens entrada=%d salida=%d cache_lectura=%d cache_escritura=%d",
         ok, fail, total_cost,
         client.total_in, client.total_out,
         client.total_cache_read, client.total_cache_write,
     )
-    db.log_system("info", "analyze run finished", {
-        "ok": ok, "failed": fail, "total_cost_usd": round(total_cost, 4),
-        "input_tokens": client.total_in, "output_tokens": client.total_out,
-        "cache_read_tokens": client.total_cache_read,
-        "cache_write_tokens": client.total_cache_write,
+    db.log_system("info", "corrida de análisis finalizada", {
+        "ok": ok, "fallidos": fail, "costo_total_usd": round(total_cost, 4),
+        "tokens_entrada": client.total_in, "tokens_salida": client.total_out,
+        "cache_lectura": client.total_cache_read,
+        "cache_escritura": client.total_cache_write,
     })
-    return {"ok": ok, "failed": fail, "total_cost": total_cost}
+    return {"ok": ok, "fallidos": fail, "costo_total": total_cost}
