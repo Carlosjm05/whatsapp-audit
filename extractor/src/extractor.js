@@ -194,6 +194,19 @@ class Extractor {
             const chat = window.Store.Chat.get(chatId);
             if (!chat) throw new Error(`Chat ${chatId} no encontrado en Store`);
 
+            // Forzar que WA Web "abra" el chat: esto dispara la
+            // sincronización de mensajes para este chat específico.
+            try {
+                if (typeof chat.sendSeen === 'function') await chat.sendSeen();
+            } catch (_) {}
+            try {
+                if (window.Store.Cmd && typeof window.Store.Cmd.openChatAt === 'function') {
+                    await window.Store.Cmd.openChatAt(chat);
+                }
+            } catch (_) {}
+            // Pequeña espera para que WA empiece a sincronizar el chat
+            await new Promise(r => setTimeout(r, 3000));
+
             // Cargar historial más antiguo. loadEarlierMsgs trae
             // ~20-30 mensajes por llamada. Repetimos hasta que deje
             // de devolver o lleguemos a un tope razonable.

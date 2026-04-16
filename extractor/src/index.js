@@ -212,6 +212,85 @@ async function waitForStableConnection(client, {
     logger.warn('⚠️  No se confirmó CONNECTED estable; continuando de todos modos.');
 }
 
+// ─── KEEP-ALIVE: EVITAR QUE WA WEB PAUSE LA SINCRONIZACIÓN ─
+// WhatsApp Web detecta ventanas headless/inactivas y pausa la
+// sincronización de mensajes. Inyectamos:
+// 1. Override permanente de document.hidden y visibilityState
+// 2. Heartbeat cada 5s con eventos focus/visibilitychange + click
+// 3. Override de Page.setLifecycleEventsEnabled de CDP
+async function injectKeepAlive(client) {
+    const page = client.pupPage;
+    if (!page) {
+        logger.warn('⚠️  pupPage no disponible, no se puede inyectar keep-alive');
+        return;
+    }
+
+    logger.info('💓 Inyectando keep-alive para mantener WA Web activo...');
+
+    try {
+        // Override a nivel CDP: decirle a Chromium que la página es visible
+        const cdp = await page.target().createCDPSession();
+        await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+        await cdp.send('Page.setWebLifecycleState', { state: 'active' });
+    } catch (err) {
+        logger.warn(`   CDP overrides parcialmente fallidos (no crítico): ${err.message}`);
+    }
+
+    await page.evaluate(() => {
+        // ── 1. Override permanente de visibility ──
+        Object.defineProperty(document, 'hidden', {
+            get: () => false,
+            configurable: true,
+        });
+        Object.defineProperty(document, 'visibilityState', {
+            get: () => 'visible',
+            configurable: true,
+        });
+        // Algunos builds de WA Web leen webkitHidden
+        try {
+            Object.defineProperty(document, 'webkitHidden', {
+                get: () => false,
+                configurable: true,
+            });
+            Object.defineProperty(document, 'webkitVisibilityState', {
+                get: () => 'visible',
+                configurable: true,
+            });
+        } catch (_) {}
+
+        // Override hasFocus para que siempre reporte true
+        document.hasFocus = () => true;
+
+        // ── 2. Interceptar el Visibility API event listener ──
+        // Prevenir que WA Web registre su listener de pausa
+        const origAddEventListener = document.addEventListener.bind(document);
+        document.addEventListener = function(type, fn, opts) {
+            if (type === 'visibilitychange') return;
+            return origAddEventListener(type, fn, opts);
+        };
+
+        // ── 3. Heartbeat periódico ──
+        if (window.__waKeepAlive) clearInterval(window.__waKeepAlive);
+        window.__waKeepAlive = setInterval(() => {
+            // Eventos de focus
+            window.dispatchEvent(new Event('focus'));
+            document.dispatchEvent(new Event('focus'));
+
+            // Forzar visibilitychange con estado visible
+            document.dispatchEvent(new Event('visibilitychange'));
+
+            // Mouse move aleatorio para simular actividad
+            const x = Math.floor(Math.random() * 800) + 100;
+            const y = Math.floor(Math.random() * 600) + 100;
+            document.dispatchEvent(new MouseEvent('mousemove', {
+                clientX: x, clientY: y, bubbles: true
+            }));
+        }, 5000);
+    });
+
+    logger.info('💓 Keep-alive inyectado: visibility override + heartbeat cada 5s');
+}
+
 // ─── MODO: TEST DE CONEXIÓN ─────────────────────────────────
 async function runTestMode(client) {
     logger.info('🔍 MODO TEST — Verificando conexión...');
@@ -477,6 +556,12 @@ async function main() {
 
         client.initialize().catch(finish(reject));
     });
+
+    // ── Inyectar keep-alive ANTES de la espera de sincronización ──
+    // WhatsApp Web pausa la sincronización de mensajes cuando detecta
+    // que la ventana está inactiva (headless). Inyectamos overrides y
+    // un heartbeat de actividad para mantenerlo sincronizando.
+    await injectKeepAlive(client);
 
     // WhatsApp Web sigue sincronizando después de `ready`. Especialmente
     // tras re-vincular el dispositivo, los módulos internos tardan en
