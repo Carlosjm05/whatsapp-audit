@@ -20,6 +20,13 @@ import {
 } from 'recharts';
 import { ReactNode } from 'react';
 
+// Interfaces con propiedades conocidas (FunnelStage, StatusBucket, etc.)
+// no son asignables a Record<string, unknown> porque les falta la index
+// signature. Este tipo acepta cualquier objeto con propiedades string.
+interface ChartDataItem {
+  [key: string]: unknown;
+}
+
 export const CHART_COLORS = [
   '#2563eb',
   '#10b981',
@@ -73,7 +80,7 @@ export function ChartBar({
   color = '#2563eb',
   horizontal = false
 }: {
-  data: Array<Record<string, unknown>>;
+  data: ChartDataItem[];
   xKey: string;
   yKey: string;
   color?: string;
@@ -124,7 +131,7 @@ export function ChartLine({
   yKey,
   color = '#2563eb'
 }: {
-  data: Array<Record<string, unknown>>;
+  data: ChartDataItem[];
   xKey: string;
   yKey: string;
   color?: string;
@@ -161,7 +168,7 @@ export function ChartPie({
   nameKey,
   valueKey
 }: {
-  data: Array<Record<string, unknown>>;
+  data: ChartDataItem[];
   nameKey: string;
   valueKey: string;
 }) {
@@ -201,7 +208,7 @@ export function ChartFunnel({
   nameKey,
   valueKey
 }: {
-  data: Array<Record<string, unknown>>;
+  data: ChartDataItem[];
   nameKey: string;
   valueKey: string;
 }) {
