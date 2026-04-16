@@ -91,10 +91,10 @@ function createWhatsAppClient() {
                 '--disable-features=LockProfileCookieDatabase',
             ],
         },
-        // webVersionCache removido: forzar a que whatsapp-web.js obtenga
-        // la versión actual de WhatsApp Web. Versiones cacheadas viejas
-        // provocaban que módulos internos (e.g. waitForChatLoading) no
-        // estuvieran disponibles después de re-vincular el dispositivo.
+        webVersionCache: {
+            type: 'remote',
+            remotePath: 'https://raw.githubusercontent.com/nicollaseng/nicollaseng/master/nicollaseng_web_v2.2414.7.json',
+        },
     });
 
     // ─── EVENTOS DEL CLIENTE ────────────────────────────────
