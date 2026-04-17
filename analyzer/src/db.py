@@ -762,6 +762,24 @@ def fetch_ideal_responses(min_quality: int = 8, limit: int = 50) -> List[Dict[st
         return [dict(r) for r in cur.fetchall()]
 
 
+def _valid_uuids(values: Any) -> List[str]:
+    """Filtra una lista para dejar solo strings que sean UUIDs válidos.
+    Los elementos malformados se descartan silenciosamente."""
+    import uuid as _uuid
+    if not values:
+        return []
+    out: List[str] = []
+    for v in values:
+        if not v:
+            continue
+        try:
+            # uuid.UUID() valida formato y normaliza
+            out.append(str(_uuid.UUID(str(v))))
+        except (ValueError, AttributeError):
+            continue
+    return out
+
+
 def upsert_kb_entries(entries: List[Dict[str, Any]]) -> int:
     """Inserta (o reemplaza) filas en dapta_knowledge_base.
 
@@ -774,11 +792,15 @@ def upsert_kb_entries(entries: List[Dict[str, Any]]) -> int:
         # Reemplazamos todo: knowledge base es regenerado cada corrida.
         cur.execute("TRUNCATE dapta_knowledge_base")
         for e in entries:
+            # source_leads es uuid[] en DB — cast explícito del text[] al
+            # tipo correcto. Validamos los UUIDs primero para evitar
+            # InvalidTextRepresentation si viene algún string malformado.
+            source_leads = _valid_uuids(e.get("source_leads"))
             cur.execute(
                 """INSERT INTO dapta_knowledge_base
                      (entry_type, category, content_text, verbatim_examples,
                       frequency_count, related_project, ideal_response, source_leads)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s::uuid[])""",
                 (
                     e["entry_type"],
                     e.get("category"),
@@ -787,7 +809,7 @@ def upsert_kb_entries(entries: List[Dict[str, Any]]) -> int:
                     int(e.get("frequency_count", 1)),
                     e.get("related_project"),
                     e.get("ideal_response"),
-                    e.get("source_leads") or [],
+                    source_leads,
                 ),
             )
     return len(entries)
