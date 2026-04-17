@@ -78,6 +78,51 @@ def list_advisors(_user: str = Depends(get_current_user)) -> List[dict]:
     return rows
 
 
+@router.get("/{name}/errors")
+def advisor_errors_detail(
+    name: str,
+    _user: str = Depends(get_current_user),
+) -> dict:
+    """Devuelve los errores del asesor agrupados por texto del error, con
+    la lista de leads donde ocurrió cada uno. Permite que el panel haga
+    drill-down al click."""
+    # Agrupar por texto de error. Unnest de errors_list + join con leads
+    # para traer cliente, teléfono, fecha y score.
+    rows = fetch_all(
+        """
+        SELECT
+          err AS error_text,
+          COUNT(*)::int AS occurrences,
+          ARRAY_AGG(
+            json_build_object(
+              'lead_id', l.id::text,
+              'real_name', l.real_name,
+              'whatsapp_name', l.whatsapp_name,
+              'phone', l.phone,
+              'overall_score', ascr.overall_score,
+              'final_status', co.final_status,
+              'first_response_minutes', rt.first_response_minutes,
+              'last_contact_at', to_char(
+                l.last_contact_at AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+              )
+            ) ORDER BY l.last_contact_at DESC NULLS LAST
+          ) AS leads
+        FROM advisor_scores ascr
+        JOIN leads l ON l.id = ascr.lead_id
+        LEFT JOIN conversation_outcomes co ON co.lead_id = l.id
+        LEFT JOIN response_times rt ON rt.lead_id = l.id,
+        LATERAL unnest(COALESCE(ascr.errors_list, ARRAY[]::text[])) AS err
+        WHERE ascr.advisor_name = %s
+          AND err IS NOT NULL AND err <> ''
+        GROUP BY err
+        ORDER BY occurrences DESC, err ASC
+        """,
+        [name],
+    )
+    return {"advisor_name": name, "errors": rows}
+
+
 @router.get("/{name}")
 def advisor_detail(name: str, _user: str = Depends(get_current_user)) -> dict:
     summary = fetch_one(

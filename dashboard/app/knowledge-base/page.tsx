@@ -186,14 +186,31 @@ export default function KnowledgeBasePage() {
 
       {loading && <div className="skeleton h-40" />}
       {error && <ErrorState message={error} />}
-      {!loading && !error && (
+      {!loading && !error && rows.length === 0 && (
+        <div className="card p-10 text-center">
+          <Sparkles className="w-10 h-10 mx-auto text-slate-400 mb-3" />
+          <div className="text-slate-700 font-medium mb-2">
+            La base de conocimiento todavía está vacía.
+          </div>
+          <div className="text-xs text-slate-500 max-w-lg mx-auto">
+            Se genera automáticamente tras cada corrida del analyzer.
+            Si acabas de analizar leads, espera un momento o regenera
+            manualmente desde el servidor con:
+            <br />
+            <code className="text-slate-600 bg-slate-100 px-1 rounded mt-2 inline-block">
+              docker compose run --rm analyzer python -m src.main --mode=kb
+            </code>
+          </div>
+        </div>
+      )}
+      {!loading && !error && rows.length > 0 && (
         <DataTable
           columns={columns}
           rows={rows}
           onRowClick={(r) => setSelected(r)}
-          initialSortKey="createdAt"
+          initialSortKey="frequency_count"
           initialSortDir="desc"
-          empty="Sin entradas en la base de conocimiento."
+          empty="Sin resultados con el filtro aplicado."
         />
       )}
 

@@ -180,11 +180,30 @@ class Extractor {
             if (this.skipMedia) {
                 logger.info(`  ⏭️  Saltando descarga de ${mediaQueue.length} media (--skip-media)`);
             } else if (mediaQueue.length > 0) {
-                const { ok, failed } = await this._downloadMediaBatch(mediaQueue, convId, jid);
+                const { ok, failed, expired } = await this._downloadMediaBatch(mediaQueue, convId, jid);
+                // Resumen UNA línea con conteo de expirados (lo más típico
+                // al resincronizar historial antiguo de WhatsApp).
+                const expiredPart = expired > 0
+                    ? ` (${expired} expirados)`
+                    : failed > 0 ? ` (${failed} fallidos)` : '';
                 logger.info(
                     `  ✅ ${chatName}: ${processedMessages.length} msgs, ` +
-                    `media ${ok}/${mediaQueue.length} descargados (${failed} fallidos)`
+                    `media ${ok}/${mediaQueue.length}${expiredPart}`
                 );
+                // Si el grueso de la media está expirada, explicarlo en UNA
+                // línea. Ayuda a entender que no es un bug, es historial viejo.
+                const expiredPct = mediaQueue.length > 0
+                    ? (expired / mediaQueue.length) * 100
+                    : 0;
+                if (expiredPct >= 80) {
+                    logger.info(
+                        `  ℹ️  ${Math.round(expiredPct)}% de media expirada — historial antiguo`
+                    );
+                } else if (expiredPct >= 30) {
+                    logger.info(
+                        `  ℹ️  ${Math.round(expiredPct)}% de media expirada`
+                    );
+                }
             } else {
                 logger.info(`  ✅ ${chatName}: ${processedMessages.length} msgs (sin media)`);
             }
@@ -201,16 +220,17 @@ class Extractor {
         let cursor = 0;
         let ok = 0;
         let failed = 0;
+        let expired = 0;  // 403 / URL vencida — típico de historial antiguo
 
         const worker = async () => {
             while (cursor < queue.length) {
                 const idx = cursor++;
                 const item = queue[idx];
 
-                const mediaInfo = await this._safeDownloadMedia(item.rawMsg, jid, item.type);
-                if (mediaInfo) {
+                const result = await this._safeDownloadMedia(item.rawMsg, jid, item.type);
+                if (result && result.mediaInfo) {
                     try {
-                        await this.db.updateMessageMedia(convId, item.messageId, mediaInfo);
+                        await this.db.updateMessageMedia(convId, item.messageId, result.mediaInfo);
                         ok++;
                     } catch (dbErr) {
                         logger.warn(`  ⚠️  Error guardando media en BD: ${dbErr.message}`);
@@ -218,9 +238,10 @@ class Extractor {
                     }
                 } else {
                     failed++;
+                    if (result && result.expired) expired++;
                 }
 
-                // Log de progreso cada 20 descargas
+                // Log de progreso cada 20 descargas.
                 if ((ok + failed) % 20 === 0) {
                     logger.info(`     Media progreso: ${ok + failed}/${queue.length} (${ok} ok, ${failed} fallidos)`);
                 }
@@ -231,31 +252,41 @@ class Extractor {
             Array.from({ length: MEDIA_CONCURRENCY }, () => worker())
         );
 
-        return { ok, failed };
+        return { ok, failed, expired };
     }
 
-    // Descarga un media sin lanzar excepción. Retorna null en fallo.
-    // 1 reintento con 2s, llama updateMediaMessage para refrescar URLs.
-    // Si detecta rate-limit (429), hace pausa defensiva para bajar la
-    // probabilidad de ban — esos defaults no son cosméticos.
+    // Descarga un media sin lanzar excepción. Retorna
+    // {mediaInfo, expired}. mediaInfo es null en fallo; expired=true
+    // si el fallo es por URL vencida (historial antiguo, 403 típico).
+    // Todos los logs individuales se silencian — se emite un solo
+    // resumen por chat al final (ver extractChat).
     async _safeDownloadMedia(msg, jid, mediaType) {
         try {
-            return await this.downloadMedia(msg, jid, mediaType);
+            const mediaInfo = await this.downloadMedia(msg, jid, mediaType);
+            return { mediaInfo, expired: false };
         } catch (error) {
-            const message = String(error?.message || '');
+            const message = String(error?.message || '').toLowerCase();
             const isRateLimit =
                 message.includes('429') ||
-                message.toLowerCase().includes('rate') ||
-                message.toLowerCase().includes('too many');
+                message.includes('rate') ||
+                message.includes('too many');
             if (isRateLimit) {
+                // Rate limit SÍ se loguea — es operacionalmente importante
+                // (riesgo real de ban).
                 logger.error(
-                    `  🚨 Posible rate-limit detectado (${message}). Pausando 60s para evitar ban.`
+                    `  🚨 Posible rate-limit detectado. Pausando 60s para evitar ban.`
                 );
                 await sleep(60000);
-            } else {
-                logger.warn(`  ⚠️  Media ${msg.key?.id} falló: ${error.message}`);
+                return { mediaInfo: null, expired: false };
             }
-            return null;
+            // 403 / URL expirada / reupload fallido: silencio, cuenta como expirado.
+            const isExpired =
+                message.includes('403') ||
+                message.includes('forbidden') ||
+                message.includes('expired') ||
+                message.includes('updatemediamessage') ||
+                message.includes('reupload');
+            return { mediaInfo: null, expired: isExpired };
         }
     }
 
@@ -263,6 +294,7 @@ class Extractor {
     // Los URLs de media de WhatsApp expiran. downloadMediaMessage
     // acepta reuploadRequest que pide URLs frescas cuando hay 403.
     // Importante: hay que hacer .bind(sock) para no perder el this.
+    // Silencioso: los fallos se manejan arriba con resumen por chat.
     async downloadMedia(msg, jid, mediaType) {
         const reuploadRequest = this.sock.updateMediaMessage.bind(this.sock);
         const pinoSilent = P({ level: 'silent' });
@@ -283,8 +315,8 @@ class Extractor {
         try {
             buffer = await attemptDownload();
         } catch (err) {
-            // Un único reintento: intentar refrescar URLs manualmente antes.
-            logger.warn(`  ⚠️  Primer intento de descarga falló (${err.message}), refrescando URL...`);
+            // Un único reintento refrescando URLs manualmente. Sin log
+            // individual — el resumen al final del chat cuenta los fallos.
             await sleep(MEDIA_RETRY_DELAY_MS);
             try {
                 await this.sock.updateMediaMessage(msg);

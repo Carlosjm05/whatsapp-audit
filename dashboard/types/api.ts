@@ -373,6 +373,29 @@ export interface TypeCount extends ChartItem {
   count: number;
 }
 
+// ─── Errores detallados de un asesor ────────────────────────
+export interface AdvisorErrorLead {
+  lead_id: string;
+  real_name?: string | null;
+  whatsapp_name?: string | null;
+  phone?: string | null;
+  overall_score?: number | string | null;
+  final_status?: string | null;
+  first_response_minutes?: number | string | null;
+  last_contact_at?: string | null;
+}
+
+export interface AdvisorErrorGroup {
+  error_text: string;
+  occurrences: number;
+  leads: AdvisorErrorLead[];
+}
+
+export interface AdvisorErrorsResponse {
+  advisor_name: string;
+  errors: AdvisorErrorGroup[];
+}
+
 // Shape real de /api/advisors (snake_case).
 export interface AdvisorRanking {
   [key: string]: unknown;
@@ -439,12 +462,13 @@ export interface BedroomsCount extends ChartItem {
   count: number;
 }
 
+// Shape real que devuelve /api/product-intel (snake_case).
 export interface ProductIntel {
-  budgetDistribution: RangeCount[];
-  topZones: ZoneCount[];
-  topProjects: ProjectConversions[];
-  bedroomsDemand: BedroomsCount[];
-  propertyTypes: TypeCount[];
+  demand_by_product_type: Array<{ product_type: string; count: number; [key: string]: unknown }>;
+  demand_by_zone: Array<{ zone: string; count: number; [key: string]: unknown }>;
+  budget_range_distribution: Array<{ budget_range: string; count: number; [key: string]: unknown }>;
+  top_projects_mentioned: Array<{ project: string; count: number; [key: string]: unknown }>;
+  payment_method_distribution: Array<{ payment_method: string; count: number; [key: string]: unknown }>;
 }
 
 export interface BucketCount extends ChartItem {
@@ -452,31 +476,44 @@ export interface BucketCount extends ChartItem {
   count: number;
 }
 
-export interface ErrorsIntel {
-  topErrors: TypeCount[];
-  responseTimeHistogram: BucketCount[];
-  followupStats: {
-    withFollowup: number;
-    withoutFollowup: number;
-    avgFollowups: number;
-    lostDueToNoFollowup: number;
+// Shape real que devuelve /api/errors.
+export interface ErrorsOverview {
+  top_errors: Array<{ error_text: string; count: number; [key: string]: unknown }>;
+  advisors_with_most_errors: Array<{
+    advisor_name: string;
+    total_errors: number;
+    total_leads: number;
+    avg_overall_score: number | string | null;
+    [key: string]: unknown;
+  }>;
+  response_time_stats: {
+    avg_first_response_minutes?: number | string | null;
+    p50_first_response_minutes?: number | string | null;
+    p95_first_response_minutes?: number | string | null;
+    avg_response_minutes?: number | string | null;
+    avg_longest_gap_hours?: number | string | null;
   };
+  pct_without_followup: number | null;
 }
 
-export interface CompetitorMention extends ChartItem {
-  name: string;
-  mentions: number;
-  lostDeals: number;
-}
-
-export interface ReasonCount extends ChartItem {
-  reason: string;
-  count: number;
-}
-
+// Shape real que devuelve /api/competitors (snake_case).
 export interface CompetitorsIntel {
-  topCompetitors: CompetitorMention[];
-  lossReasons: ReasonCount[];
+  top_competitors: Array<{
+    competitor_name: string;
+    mentions: number;
+    lost_to_competitor: number;
+    [key: string]: unknown;
+  }>;
+  top_reasons_considering: Array<{
+    reason: string;
+    count: number;
+    [key: string]: unknown;
+  }>;
+  loss_reasons: Array<{
+    loss_reason: string;
+    count: number;
+    [key: string]: unknown;
+  }>;
 }
 
 export interface KnowledgeEntry {

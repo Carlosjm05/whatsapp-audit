@@ -545,4 +545,18 @@ def run_analyze(limit: Optional[int] = None) -> Dict[str, Any]:
         "cache_lectura": client.total_cache_read,
         "cache_escritura": client.total_cache_write,
     })
+
+    # Regenerar automáticamente la KB si hubo leads analizados exitosamente.
+    # Es una agregación SQL (no toca Claude), costo marginal. Controlado
+    # por env var AUTO_REBUILD_KB (default true).
+    auto_rebuild = os.getenv("AUTO_REBUILD_KB", "true").lower() in {"1", "true", "yes"}
+    if auto_rebuild and ok > 0:
+        try:
+            from .knowledge_base import build_knowledge_base
+            kb_summary = build_knowledge_base()
+            log.info("KB regenerada automáticamente: %d entradas totales",
+                     kb_summary.get("total_entries", 0))
+        except Exception as e:
+            log.warning("Fallo al regenerar KB automáticamente: %s", e)
+
     return {"ok": ok, "fallidos": fail, "costo_total": total_cost}

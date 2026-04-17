@@ -2,12 +2,22 @@
 
 import { useEffect, useState } from 'react';
 import { fetchApi, safeArray } from '@/lib/api';
-import type { ProductIntel, ProjectConversions, ZoneCount } from '@/types/api';
+import type { ProductIntel } from '@/types/api';
 import PageHeader from '@/components/PageHeader';
 import { ChartCard, ChartBar, ChartPie } from '@/components/Charts';
 import { ErrorState } from '@/components/LoadingState';
 import DataTable, { Column } from '@/components/DataTable';
-import { formatNumber, formatPct } from '@/lib/format';
+import { formatNumber } from '@/lib/format';
+
+interface ProjectRow {
+  [key: string]: unknown;
+  project: string;
+  count: number;
+}
+
+function humanize(v?: string): string {
+  return (v || '').replace(/_/g, ' ');
+}
 
 export default function ProductIntelPage() {
   const [data, setData] = useState<ProductIntel | null>(null);
@@ -31,104 +41,154 @@ export default function ProductIntelPage() {
     };
   }, []);
 
-  const projectColumns: Column<ProjectConversions>[] = [
-    { key: 'project', header: 'Proyecto', accessor: (r) => r.project, sortable: true },
+  const projectColumns: Column<ProjectRow>[] = [
     {
-      key: 'leads',
-      header: 'Leads',
-      accessor: (r) => r.leads,
-      sortable: true,
-      render: (r) => formatNumber(r.leads)
+      key: 'project',
+      header: 'Proyecto',
+      accessor: (r) => r.project,
+      sortable: true
     },
     {
-      key: 'conversions',
-      header: 'Conversiones',
-      accessor: (r) => r.conversions,
+      key: 'count',
+      header: 'Menciones',
+      accessor: (r) => r.count,
       sortable: true,
-      render: (r) => formatNumber(r.conversions)
-    },
-    {
-      key: 'rate',
-      header: 'Tasa',
-      accessor: (r) => (r.leads ? r.conversions / r.leads : 0),
-      sortable: true,
-      render: (r) =>
-        formatPct(r.leads ? r.conversions / r.leads : 0, 1)
+      align: 'right',
+      render: (r) => formatNumber(r.count)
     }
   ];
+
+  // Normalizar (humanizar _): "50_100m" -> "50 100m"
+  const productTypes = safeArray<{ product_type: string; count: number }>(
+    data?.demand_by_product_type
+  ).map((r) => ({ ...r, product_type: humanize(r.product_type) }));
+
+  const zones = safeArray<{ zone: string; count: number }>(data?.demand_by_zone);
+
+  const budgets = safeArray<{ budget_range: string; count: number }>(
+    data?.budget_range_distribution
+  ).map((r) => ({ ...r, budget_range: humanize(r.budget_range) }));
+
+  const payments = safeArray<{ payment_method: string; count: number }>(
+    data?.payment_method_distribution
+  ).map((r) => ({ ...r, payment_method: humanize(r.payment_method) }));
+
+  const projects = safeArray<ProjectRow>(data?.top_projects_mentioned);
+
+  const totalSignals =
+    productTypes.length + zones.length + budgets.length + payments.length + projects.length;
 
   return (
     <div>
       <PageHeader
         title="Inteligencia de producto"
-        subtitle="Demanda, presupuestos, zonas y proyectos con mayor tracción."
+        subtitle="Demanda, presupuestos, zonas y proyectos con mayor tracción en las conversaciones analizadas."
       />
 
       {loading && <div className="skeleton h-40" />}
       {error && <ErrorState message={error} />}
 
-      {!loading && !error && data && (
+      {!loading && !error && data && totalSignals === 0 && (
+        <div className="card p-10 text-center">
+          <div className="text-slate-600 mb-2">
+            Todavía no hay suficientes datos para mostrar inteligencia de producto.
+          </div>
+          <div className="text-xs text-slate-500">
+            Esta vista se llena a medida que el analyzer procesa conversaciones
+            con menciones de producto, zona, presupuesto o forma de pago.
+          </div>
+        </div>
+      )}
+
+      {!loading && !error && data && totalSignals > 0 && (
         <>
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
             <ChartCard
-              title="Distribución de presupuestos"
-              subtitle="Rango de precios de interés"
+              title="Tipos de inmueble demandados"
+              subtitle="Lotes, fincas, etc. según lo que pide el lead"
             >
-              <ChartBar
-                data={safeArray(data.budgetDistribution)}
-                xKey="range"
-                yKey="count"
-                color="#2563eb"
-              />
+              {productTypes.length > 0 ? (
+                <ChartPie
+                  data={productTypes}
+                  nameKey="product_type"
+                  valueKey="count"
+                />
+              ) : (
+                <EmptyMini msg="Sin datos de tipo de producto" />
+              )}
             </ChartCard>
+
             <ChartCard
               title="Zonas más solicitadas"
-              subtitle="Top zonas por interés"
+              subtitle="Top 10 zonas/ciudades de interés"
             >
-              <ChartBar
-                data={safeArray<ZoneCount>(data.topZones).slice(0, 10)}
-                xKey="zone"
-                yKey="count"
-                color="#10b981"
-                horizontal
-              />
+              {zones.length > 0 ? (
+                <ChartBar
+                  data={zones.slice(0, 10)}
+                  xKey="zone"
+                  yKey="count"
+                  color="#10b981"
+                  horizontal
+                />
+              ) : (
+                <EmptyMini msg="Sin datos de zona" />
+              )}
             </ChartCard>
+
             <ChartCard
-              title="Habitaciones demandadas"
-              subtitle="Preferencias por número de habitaciones"
+              title="Distribución de presupuestos"
+              subtitle="Rangos de inversión mencionados"
             >
-              <ChartPie
-                data={safeArray(data.bedroomsDemand)}
-                nameKey="bedrooms"
-                valueKey="count"
-              />
+              {budgets.length > 0 ? (
+                <ChartBar
+                  data={budgets}
+                  xKey="budget_range"
+                  yKey="count"
+                  color="#2563eb"
+                />
+              ) : (
+                <EmptyMini msg="Sin datos de presupuesto" />
+              )}
             </ChartCard>
+
             <ChartCard
-              title="Tipos de inmueble"
-              subtitle="Distribución por tipología"
+              title="Forma de pago preferida"
+              subtitle="Contado, crédito, subsidio, etc."
             >
-              <ChartPie
-                data={safeArray(data.propertyTypes)}
-                nameKey="type"
-                valueKey="count"
-              />
+              {payments.length > 0 ? (
+                <ChartPie
+                  data={payments}
+                  nameKey="payment_method"
+                  valueKey="count"
+                />
+              ) : (
+                <EmptyMini msg="Sin datos de forma de pago" />
+              )}
             </ChartCard>
           </div>
 
           <div className="mt-6">
             <h3 className="text-sm font-semibold text-slate-800 mb-3">
-              Top proyectos
+              Top proyectos mencionados
             </h3>
             <DataTable
               columns={projectColumns}
-              rows={safeArray<ProjectConversions>(data.topProjects)}
-              initialSortKey="leads"
+              rows={projects}
+              initialSortKey="count"
               initialSortDir="desc"
-              empty="Sin datos de proyectos."
+              empty="Ningún lead mencionó proyectos específicos todavía."
             />
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+function EmptyMini({ msg }: { msg: string }) {
+  return (
+    <div className="flex items-center justify-center h-40 text-xs text-slate-400">
+      {msg}
     </div>
   );
 }
