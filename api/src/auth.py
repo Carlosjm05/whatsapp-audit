@@ -1,9 +1,13 @@
-"""Autenticación JWT (admin único) para el API de auditoría."""
-from __future__ import annotations
+"""Autenticación JWT (admin único) para el API de auditoría.
 
+Nota: NO uses `from __future__ import annotations` aquí. El decorador
+`@limiter.limit` de slowapi envuelve el handler y Pydantic pierde la
+referencia a `LoginRequest` cuando las anotaciones son strings lazy
+(PEP 563), arrojando PydanticUndefinedAnnotation al arrancar el API.
+"""
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
@@ -32,7 +36,7 @@ class TokenResponse(BaseModel):
     expires_in: int
 
 
-def create_access_token(subject: str) -> tuple[str, int]:
+def create_access_token(subject: str) -> Tuple[str, int]:
     s = get_settings()
     expires_delta = timedelta(hours=s.jwt_expiry_hours)
     expire = datetime.now(tz=timezone.utc) + expires_delta
