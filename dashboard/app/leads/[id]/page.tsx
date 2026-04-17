@@ -55,6 +55,14 @@ function intentTone(score?: number): 'red' | 'yellow' | 'green' {
   return 'green';
 }
 
+// Postgres DECIMAL llega como string en el JSON (default de FastAPI
+// para tipos Decimal). Este helper coacciona a number seguro.
+function toNum(v: unknown): number | undefined {
+  if (v === null || v === undefined || v === '') return undefined;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 function recoveryTone(prob?: string): 'red' | 'yellow' | 'green' | 'gray' {
   if (prob === 'alta') return 'green';
   if (prob === 'media') return 'yellow';
@@ -162,8 +170,14 @@ export default function LeadDetailPage() {
   );
 
   const displayName = (lead.real_name as string) || (lead.whatsapp_name as string) || (lead.phone as string) || 'Sin nombre';
-  const intentScore = intent.intent_score as number | undefined;
+  const intentScore = toNum(intent.intent_score);
   const convId = lead.conversation_id as string | undefined;
+
+  // Coacciones de campos DECIMAL (vienen como string desde el API).
+  const firstRespMin = toNum(responseTimes.first_response_minutes);
+  const avgRespMin = toNum(responseTimes.avg_response_minutes);
+  const longestGapH = toNum(responseTimes.longest_gap_hours);
+  const overallScore = toNum(advisor.overall_score);
 
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto">
@@ -510,27 +524,15 @@ export default function LeadDetailPage() {
             <div className="grid grid-cols-2 gap-3">
               <Field
                 label="Primera respuesta"
-                value={
-                  responseTimes.first_response_minutes !== undefined
-                    ? `${Math.round(responseTimes.first_response_minutes as number)} min`
-                    : undefined
-                }
+                value={firstRespMin !== undefined ? `${Math.round(firstRespMin)} min` : undefined}
               />
               <Field
                 label="Promedio"
-                value={
-                  responseTimes.avg_response_minutes !== undefined
-                    ? `${Math.round(responseTimes.avg_response_minutes as number)} min`
-                    : undefined
-                }
+                value={avgRespMin !== undefined ? `${Math.round(avgRespMin)} min` : undefined}
               />
               <Field
                 label="Brecha más larga"
-                value={
-                  responseTimes.longest_gap_hours !== undefined
-                    ? `${(responseTimes.longest_gap_hours as number).toFixed(1)} h`
-                    : undefined
-                }
+                value={longestGapH !== undefined ? `${longestGapH.toFixed(1)} h` : undefined}
               />
               <Field
                 label="Categoría"
@@ -542,10 +544,10 @@ export default function LeadDetailPage() {
 
         {/* Advisor score */}
         <Section title="Calificación del asesor" icon={<Shield className="w-4 h-4" />}>
-          {advisor.overall_score !== undefined && (
+          {overallScore !== undefined && (
             <div className="mb-4 flex items-center gap-3">
               <div className="text-3xl font-bold text-slate-900">
-                {Number(advisor.overall_score).toFixed(1)}
+                {overallScore.toFixed(1)}
               </div>
               <div className="text-xs text-slate-500">
                 Score general<br />(1-10)

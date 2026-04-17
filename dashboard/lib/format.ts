@@ -1,30 +1,38 @@
-export function formatCOP(value: number | null | undefined): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+export function formatCOP(value: number | string | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '—';
+  // Postgres BIGINT/DECIMAL pueden llegar como string en JSON.
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return '—';
   try {
     return new Intl.NumberFormat('es-CO', {
       style: 'currency',
       currency: 'COP',
       maximumFractionDigits: 0
-    }).format(value);
+    }).format(n);
   } catch {
-    return `$${Math.round(value).toLocaleString('es-CO')}`;
+    return `$${Math.round(n).toLocaleString('es-CO')}`;
   }
 }
 
 export function formatNumber(
-  value: number | null | undefined,
+  value: number | string | null | undefined,
   digits = 0
 ): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  if (value === null || value === undefined || value === '') return '—';
+  // Postgres DECIMAL puede llegar como string en JSON.
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return '—';
   return new Intl.NumberFormat('es-CO', {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits
-  }).format(value);
+  }).format(n);
 }
 
-export function formatPct(value: number | null | undefined, digits = 0): string {
-  if (value === null || value === undefined || Number.isNaN(value)) return '—';
-  const v = value <= 1 ? value * 100 : value;
+export function formatPct(value: number | string | null | undefined, digits = 0): string {
+  if (value === null || value === undefined || value === '') return '—';
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return '—';
+  const v = n <= 1 ? n * 100 : n;
   return `${v.toFixed(digits)}%`;
 }
 
