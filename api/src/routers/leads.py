@@ -26,29 +26,44 @@ def _parse_lead_id(lead_id: str) -> str:
 # ─── Leads fantasma ───────────────────────────────────────────
 @router.get("/ghosts")
 def list_ghost_leads(
-    min_intent: int = Query(6, ge=1, le=10,
-        description="Intent score mínimo del lead (default 6)"),
-    min_days: int = Query(15, ge=0,
-        description="Días mínimos sin contacto (default 15)"),
+    min_intent: int = Query(4, ge=1, le=10,
+        description="Intent score mínimo del lead (default 4)"),
+    min_days: int = Query(7, ge=0,
+        description="Días mínimos sin contacto (default 7)"),
     only_advisor_fault: bool = Query(False,
         description="Solo mostrar pérdidas por culpa del asesor"),
+    only_recoverable: bool = Query(False,
+        description="Solo marcados como recuperables por el análisis"),
     limit: int = Query(100, ge=1, le=500),
     _user: str = Depends(get_current_user),
 ) -> dict:
-    """Leads con intención alta que se perdieron (o se enfriaron) y llevan
-    días sin contacto. El objetivo de Óscar: resucitarlos.
+    """Leads con intención razonable que llevan días sin contacto — potenciales
+    fantasmas a resucitar. Óscar abre esta vista cada mañana para ver los
+    que valen la pena retomar.
 
-    Prioriza los perdidos por culpa del asesor (más fáciles de recuperar)."""
+    Por default es permisivo: acepta CUALQUIER estado excepto venta cerrada,
+    spam, número equivocado, descalificado y datos insuficientes. Así no
+    perdemos leads que el prompt viejo marcó como is_recoverable=false pero
+    que en realidad sí son recuperables.
+
+    Ordena: primero los marcados recuperables + culpa asesor, después el resto."""
     where = [
         "li.intent_score IS NOT NULL",
         "li.intent_score >= %s",
-        "co.final_status IN ('se_enfrio','ghosteado_por_asesor',"
-        "'ghosteado_por_lead','seguimiento_activo','nunca_calificado')",
-        "co.is_recoverable = TRUE",
+        # Excluimos outcomes donde NO se puede recuperar:
+        # - venta_cerrada: ya se cerró
+        # - spam, numero_equivocado: no son leads reales
+        # - descalificado: el lead dijo explícitamente que no quiere más
+        # - datos_insuficientes: no tenemos info para actuar
+        "co.final_status NOT IN ('venta_cerrada','spam','numero_equivocado',"
+        "'descalificado','datos_insuficientes')",
+        "l.last_contact_at IS NOT NULL",
         "EXTRACT(EPOCH FROM (NOW() - l.last_contact_at))/86400 >= %s",
     ]
     params: list = [min_intent, min_days]
 
+    if only_recoverable:
+        where.append("co.is_recoverable = TRUE")
     if only_advisor_fault:
         where.append("co.perdido_por LIKE 'asesor_%%'")
 
@@ -95,14 +110,21 @@ def list_ghost_leads(
         LEFT JOIN lead_interests lin ON lin.lead_id = l.id
         WHERE {where_sql}
         ORDER BY
+          -- 1) Marcados recuperables van primero
+          CASE WHEN co.is_recoverable = TRUE THEN 0 ELSE 1 END,
+          -- 2) Culpa del asesor (fáciles de resucitar) antes que los
+          --    que se enfriaron por el lead mismo
           CASE WHEN co.perdido_por LIKE 'asesor_%%' THEN 0 ELSE 1 END,
+          -- 3) Prioridad de recuperación si el análisis la marcó
           CASE co.recovery_priority
             WHEN 'esta_semana' THEN 1
             WHEN 'este_mes' THEN 2
             WHEN 'puede_esperar' THEN 3
             ELSE 4
           END,
+          -- 4) Intent score descendiente
           li.intent_score DESC,
+          -- 5) Presupuesto descendiente
           lf.budget_estimated_cop DESC NULLS LAST
         LIMIT %s
     """

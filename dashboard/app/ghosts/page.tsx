@@ -60,9 +60,10 @@ export default function GhostsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [minIntent, setMinIntent] = useState('6');
-  const [minDays, setMinDays] = useState('15');
+  const [minIntent, setMinIntent] = useState('4');
+  const [minDays, setMinDays] = useState('7');
   const [onlyAdvisorFault, setOnlyAdvisorFault] = useState(false);
+  const [onlyRecoverable, setOnlyRecoverable] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -71,6 +72,7 @@ export default function GhostsPage() {
     params.set('min_intent', minIntent);
     params.set('min_days', minDays);
     if (onlyAdvisorFault) params.set('only_advisor_fault', 'true');
+    if (onlyRecoverable) params.set('only_recoverable', 'true');
     params.set('limit', '200');
 
     const timer = setTimeout(() => {
@@ -94,7 +96,7 @@ export default function GhostsPage() {
       active = false;
       clearTimeout(timer);
     };
-  }, [minIntent, minDays, onlyAdvisorFault]);
+  }, [minIntent, minDays, onlyAdvisorFault, onlyRecoverable]);
 
   async function copyRecoveryMessage(msg: string | null | undefined) {
     if (!msg) {
@@ -120,7 +122,7 @@ export default function GhostsPage() {
         <div className="flex items-center gap-2 text-sm text-slate-600 mb-3">
           <Filter className="w-4 h-4" /> Filtros
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
             <label htmlFor="g-intent" className="label">Intención mínima</label>
             <select
@@ -129,8 +131,9 @@ export default function GhostsPage() {
               value={minIntent}
               onChange={(e) => setMinIntent(e.target.value)}
             >
-              <option value="4">≥ 4 (amplio)</option>
-              <option value="6">≥ 6 (default)</option>
+              <option value="1">≥ 1 (todos)</option>
+              <option value="4">≥ 4 (default — amplio)</option>
+              <option value="6">≥ 6 (interesados)</option>
               <option value="7">≥ 7 (calientes)</option>
               <option value="8">≥ 8 (muy calientes)</option>
             </select>
@@ -143,22 +146,33 @@ export default function GhostsPage() {
               value={minDays}
               onChange={(e) => setMinDays(e.target.value)}
             >
-              <option value="7">7+ días</option>
-              <option value="15">15+ días (default)</option>
+              <option value="0">Cualquiera</option>
+              <option value="3">3+ días</option>
+              <option value="7">7+ días (default)</option>
+              <option value="15">15+ días</option>
               <option value="30">30+ días</option>
               <option value="60">60+ días</option>
-              <option value="90">90+ días (fríos)</option>
+              <option value="90">90+ días (muy fríos)</option>
             </select>
           </div>
-          <div className="flex items-end">
-            <label className="inline-flex items-center gap-2 text-sm pb-2">
+          <div className="md:col-span-2 flex flex-wrap gap-4">
+            <label className="inline-flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
                 checked={onlyAdvisorFault}
                 onChange={(e) => setOnlyAdvisorFault(e.target.checked)}
               />
               <span>Solo por culpa del asesor</span>
-              <span className="text-xs text-slate-500">(más fáciles)</span>
+              <span className="text-xs text-slate-500">(más fáciles de recuperar)</span>
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={onlyRecoverable}
+                onChange={(e) => setOnlyRecoverable(e.target.checked)}
+              />
+              <span>Solo marcados como recuperables</span>
+              <span className="text-xs text-slate-500">(más restrictivo)</span>
             </label>
           </div>
         </div>
