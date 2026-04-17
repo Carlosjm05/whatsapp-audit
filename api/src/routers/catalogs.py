@@ -152,16 +152,17 @@ def update_project(
     return row or {}
 
 
-@router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/projects/{project_id}")
 def delete_project(
     project_id: str,
     _user: str = Depends(get_current_user),
-) -> None:
+) -> dict:
     pid = _parse_id(project_id)
     row = fetch_one("SELECT id FROM projects_catalog WHERE id = %s", [pid])
     if not row:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
     execute("DELETE FROM projects_catalog WHERE id = %s", [pid])
+    return {"ok": True, "id": pid}
 
 
 # ─── ASESORES ────────────────────────────────────────────────
@@ -248,13 +249,14 @@ def update_advisor(
     return row or {}
 
 
-@router.delete("/advisors/{advisor_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/advisors/{advisor_id}")
 def delete_advisor(
     advisor_id: str,
     _user: str = Depends(get_current_user),
-) -> None:
+) -> dict:
     aid = _parse_id(advisor_id)
     row = fetch_one("SELECT id FROM advisors_catalog WHERE id = %s", [aid])
     if not row:
         raise HTTPException(status_code=404, detail="Asesor no encontrado")
     execute("DELETE FROM advisors_catalog WHERE id = %s", [aid])
+    return {"ok": True, "id": aid}
