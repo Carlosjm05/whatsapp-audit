@@ -86,7 +86,7 @@ y lo pasa como hint. Debes:
 
 FORMATO DE TRANSCRIPCIÓN:
 [YYYY-MM-DD HH:MM] ROL (tipo): contenido
-ROL ∈ {LEAD, ASESOR}. Tipo: vacío (texto), "(audio Ns)", "(imagen)",
+ROL ∈ {{LEAD, ASESOR}}. Tipo: vacío (texto), "(audio Ns)", "(imagen)",
 "(documento)", etc.
 
 TU MISIÓN:
