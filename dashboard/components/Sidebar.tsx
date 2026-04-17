@@ -17,10 +17,12 @@ import {
   Menu,
   X,
   Settings,
+  Ghost,
 } from 'lucide-react';
 
 const nav = [
   { href: '/overview', label: 'Vista general', icon: LayoutDashboard },
+  { href: '/ghosts', label: 'Leads fantasma', icon: Ghost },
   { href: '/search', label: 'Búsqueda avanzada', icon: Search },
   { href: '/leads', label: 'Leads recuperables', icon: Users },
   { href: '/advisors', label: 'Desempeño de asesores', icon: UserCheck },

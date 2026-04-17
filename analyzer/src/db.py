@@ -341,9 +341,13 @@ def persist_analysis(
         try:
             with conn.cursor() as cur:
                 lead = data.get("lead", {}) or {}
+                _AGE_RANGES = {"18-25","25-35","35-50","50-65","65+","desconocido"}
+                _ANALYSIS_CONF = {"alta","media","baja"}
                 cur.execute(
                     """UPDATE leads SET
                          real_name=%s, city=%s, zone=%s,
+                         occupation=%s, age_range=%s, family_context=%s,
+                         analysis_confidence=%s,
                          lead_source=%s, lead_source_detail=%s,
                          first_contact_at=%s, last_contact_at=%s,
                          conversation_days=%s,
@@ -355,6 +359,10 @@ def persist_analysis(
                        WHERE id=%s""",
                     (
                         lead.get("real_name"), lead.get("city"), lead.get("zone"),
+                        (lead.get("occupation") or None),
+                        _safe_enum(lead.get("age_range"), _AGE_RANGES, None),
+                        (lead.get("family_context") or None),
+                        _safe_enum(lead.get("analysis_confidence"), _ANALYSIS_CONF, None),
                         _safe_enum(lead.get("lead_source"), LEAD_SOURCES_SET, "desconocido"),
                         lead.get("lead_source_detail"),
                         computed.get("first_contact_at") or lead.get("first_contact_at"),
@@ -514,24 +522,48 @@ def persist_analysis(
 
                 # ─── advisor_scores ──────────────────────────
                 a = data.get("advisor", {}) or {}
+                # speed_compliance derivado: si la app detectó violaciones,
+                # forzar False (el LLM no puede mentir aquí).
+                violations = int(computed.get("sla_violations_count", 0) or 0)
+                speed_compliance_val = a.get("speed_compliance")
+                if violations > 0:
+                    speed_compliance_val = False
+                elif speed_compliance_val is None:
+                    # Sin violaciones calculadas y sin info del LLM:
+                    # asumimos compliance si hubo al menos una respuesta.
+                    speed_compliance_val = True
+
+                followup_compliance_val = a.get("followup_compliance")
+                # Si did_followup del LLM es False y el asesor dejó colgado,
+                # forzar followup_compliance=False.
+                m_block = data.get("metrics", {}) or {}
+                if m_block.get("did_followup") is False:
+                    followup_compliance_val = False
+
                 cur.execute("DELETE FROM advisor_scores WHERE lead_id=%s", (lead_id,))
                 cur.execute(
                     """INSERT INTO advisor_scores
                          (lead_id, conversation_id,
-                          advisor_name, advisor_phone,
+                          advisor_name, advisors_involved, advisor_phone,
                           speed_score, qualification_score, product_presentation_score,
                           objection_handling_score, closing_attempt_score, followup_score,
-                          overall_score, errors_list, strengths_list)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                          overall_score,
+                          speed_compliance, followup_compliance,
+                          errors_list, strengths_list)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (
                         lead_id, conversation_id,
-                        a.get("advisor_name"), a.get("advisor_phone"),
+                        a.get("advisor_name"),
+                        a.get("advisors_involved") or [],
+                        a.get("advisor_phone"),
                         a.get("speed_score"), a.get("qualification_score"),
                         a.get("product_presentation_score"),
                         a.get("objection_handling_score"),
                         a.get("closing_attempt_score"),
                         a.get("followup_score"),
                         a.get("overall_score"),
+                        speed_compliance_val,
+                        followup_compliance_val,
                         a.get("errors_list") or [],
                         a.get("strengths_list") or [],
                     ),
@@ -542,19 +574,30 @@ def persist_analysis(
                 cur.execute(
                     "DELETE FROM conversation_outcomes WHERE lead_id=%s", (lead_id,)
                 )
+                _PERDIDO_POR = {
+                    "asesor_lento","asesor_sin_seguimiento","asesor_no_califico",
+                    "asesor_no_cerro","asesor_info_incompleta",
+                    "asesor_no_consulto_de_vuelta",
+                    "lead_desaparecio","lead_fuera_portafolio","lead_sin_decision",
+                    "lead_presupuesto","lead_competencia","ambos","no_aplica",
+                }
                 cur.execute(
                     """INSERT INTO conversation_outcomes
                          (lead_id, final_status, loss_reason, loss_point_description,
+                          loss_point_verbatim, peak_intent_verbatim,
                           is_recoverable, recovery_probability,
                           recovery_reason, not_recoverable_reason,
                           recovery_strategy, recovery_message_suggestion,
-                          alternative_product, recovery_priority)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                          alternative_product, recovery_priority,
+                          perdido_por, next_concrete_action)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (
                         lead_id,
                         _safe_enum(o.get("final_status"), FINAL_STATUSES_SET, "nunca_calificado"),
                         o.get("loss_reason"),
                         o.get("loss_point_description"),
+                        o.get("loss_point_verbatim"),
+                        o.get("peak_intent_verbatim"),
                         bool(o.get("is_recoverable", False)),
                         _safe_enum(o.get("recovery_probability"), RECOVERY_PROB_SET, "no_aplica"),
                         o.get("recovery_reason"),
@@ -563,6 +606,8 @@ def persist_analysis(
                         o.get("recovery_message_suggestion"),
                         o.get("alternative_product"),
                         _safe_enum(o.get("recovery_priority"), RECOVERY_PRIORITY_SET, "no_aplica"),
+                        _safe_enum(o.get("perdido_por"), _PERDIDO_POR, None),
+                        o.get("next_concrete_action"),
                     ),
                 )
 

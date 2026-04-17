@@ -54,16 +54,27 @@ def _coerce_yes_no_unknown(v):
     return "desconocido"
 
 
+AGE_RANGES = {"18-25", "25-35", "35-50", "50-65", "65+", "desconocido"}
+ANALYSIS_CONFIDENCE = {"alta", "media", "baja"}
+
+
 class LeadCore(BaseModel):
     real_name: Optional[str] = None
     city: Optional[str] = None
     zone: Optional[str] = None
+    # Demografía inferida del chat (prompt v2).
+    occupation: Optional[str] = None
+    age_range: Optional[str] = None
+    family_context: Optional[str] = None
+    analysis_confidence: Optional[str] = None
     lead_source: Optional[str] = "desconocido"
     lead_source_detail: Optional[str] = None
     conversation_days: Optional[int] = None
     datos_insuficientes: bool = False
 
     _v_src = field_validator("lead_source")(_in(LEAD_SOURCES, default="desconocido"))
+    _v_age = field_validator("age_range")(_in(AGE_RANGES, default=None))
+    _v_conf = field_validator("analysis_confidence")(_in(ANALYSIS_CONFIDENCE, default=None))
 
 
 class LeadInterest(BaseModel):
@@ -168,6 +179,7 @@ class ResponseTimes(BaseModel):
 
 class AdvisorScores(BaseModel):
     advisor_name: Optional[str] = None
+    advisors_involved: List[str] = Field(default_factory=list)
     advisor_phone: Optional[str] = None
     speed_score: int = 5
     qualification_score: int = 5
@@ -176,6 +188,9 @@ class AdvisorScores(BaseModel):
     closing_attempt_score: int = 5
     followup_score: int = 5
     overall_score: float = 5.0
+    # Compliance binarios (SLA 10 min + seguimiento).
+    speed_compliance: Optional[bool] = None
+    followup_compliance: Optional[bool] = None
     errors_list: List[str] = Field(default_factory=list)
     strengths_list: List[str] = Field(default_factory=list)
 
@@ -193,10 +208,21 @@ class AdvisorScores(BaseModel):
         return round(max(1.0, min(10.0, float(v))), 2)
 
 
+PERDIDO_POR = {
+    "asesor_lento", "asesor_sin_seguimiento", "asesor_no_califico",
+    "asesor_no_cerro", "asesor_info_incompleta",
+    "asesor_no_consulto_de_vuelta",
+    "lead_desaparecio", "lead_fuera_portafolio", "lead_sin_decision",
+    "lead_presupuesto", "lead_competencia", "ambos", "no_aplica",
+}
+
+
 class ConversationOutcome(BaseModel):
     final_status: Optional[str] = "nunca_calificado"
     loss_reason: Optional[str] = None
     loss_point_description: Optional[str] = None
+    loss_point_verbatim: Optional[str] = None
+    peak_intent_verbatim: Optional[str] = None
     is_recoverable: bool = False
     recovery_probability: Optional[str] = "no_aplica"
     recovery_reason: Optional[str] = None
@@ -205,10 +231,13 @@ class ConversationOutcome(BaseModel):
     recovery_message_suggestion: Optional[str] = None
     alternative_product: Optional[str] = None
     recovery_priority: Optional[str] = "no_aplica"
+    perdido_por: Optional[str] = None
+    next_concrete_action: Optional[str] = None
 
     _v_fs = field_validator("final_status")(_in(FINAL_STATUSES, default="nunca_calificado"))
     _v_rp = field_validator("recovery_probability")(_in(RECOVERY_PROB, default="no_aplica"))
     _v_rpr = field_validator("recovery_priority")(_in(RECOVERY_PRIORITY, default="no_aplica"))
+    _v_pp = field_validator("perdido_por")(_in(PERDIDO_POR, default=None))
 
 
 class CompetitorIntel(BaseModel):

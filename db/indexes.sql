@@ -67,6 +67,13 @@ CREATE INDEX idx_outcomes_status ON conversation_outcomes(final_status);
 CREATE INDEX idx_outcomes_recoverable ON conversation_outcomes(is_recoverable);
 CREATE INDEX idx_outcomes_priority ON conversation_outcomes(recovery_priority);
 CREATE INDEX idx_outcomes_probability ON conversation_outcomes(recovery_probability);
+CREATE INDEX idx_outcomes_perdido_por ON conversation_outcomes(perdido_por);
+
+-- advisor_scores compliance (acelera el panel Leads fantasma)
+CREATE INDEX idx_advisor_speed_compliance ON advisor_scores(speed_compliance)
+    WHERE speed_compliance = false;
+CREATE INDEX idx_advisor_followup_compliance ON advisor_scores(followup_compliance)
+    WHERE followup_compliance = false;
 
 -- competitor_intel
 CREATE INDEX idx_competitor_lead ON competitor_intel(lead_id);

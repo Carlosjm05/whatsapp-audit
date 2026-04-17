@@ -4,6 +4,47 @@ export interface LoginResponse {
   expires_in: number;
 }
 
+// ─── GHOST LEADS (leads fantasma recuperables) ───────────────
+export interface GhostLead {
+  [key: string]: unknown;
+  id: string;
+  conversation_id?: string;
+  phone?: string;
+  real_name?: string;
+  whatsapp_name?: string;
+  city?: string;
+  occupation?: string | null;
+  age_range?: string | null;
+  family_context?: string | null;
+  advisor_name?: string | null;
+  advisors_involved?: string[];
+  speed_compliance?: boolean | null;
+  followup_compliance?: boolean | null;
+  overall_score?: number | string | null;
+  intent_score?: number | string;
+  urgency?: string;
+  budget_estimated_cop?: number | string;
+  budget_range?: string;
+  product_type?: string;
+  project_name?: string;
+  final_status?: string;
+  perdido_por?: string | null;
+  recovery_probability?: string;
+  recovery_priority?: string;
+  loss_point_verbatim?: string | null;
+  peak_intent_verbatim?: string | null;
+  recovery_message_suggestion?: string | null;
+  next_concrete_action?: string | null;
+  alternative_product?: string | null;
+  last_contact_at?: string;
+  days_since_contact?: number;
+}
+
+export interface GhostLeadsResponse {
+  total: number;
+  rows: GhostLead[];
+}
+
 // ─── CATÁLOGOS ───────────────────────────────────────────────
 export interface ProjectCatalog {
   id: string;

@@ -313,11 +313,42 @@ export default function LeadDetailPage() {
             <Field label="Nombre real" value={lead.real_name as string} />
             <Field label="Nombre WhatsApp" value={lead.whatsapp_name as string} />
             <Field label="Teléfono" value={lead.phone as string} />
-            <Field label="Ciudad" value={lead.city as string} />
+            <Field label="Ciudad de residencia" value={lead.city as string} />
             <Field label="Zona" value={lead.zone as string} />
+            <Field label="Ocupación" value={lead.occupation as string} />
+            <Field
+              label="Rango de edad"
+              value={
+                lead.age_range && lead.age_range !== 'desconocido'
+                  ? (lead.age_range as string)
+                  : undefined
+              }
+            />
+            <Field
+              label="Contexto familiar"
+              value={lead.family_context as string}
+            />
             <Field
               label="Fuente"
               value={lead.lead_source ? String(lead.lead_source).replace(/_/g, ' ') : undefined}
+            />
+            <Field
+              label="Confianza del análisis"
+              value={
+                lead.analysis_confidence ? (
+                  <Badge
+                    tone={
+                      lead.analysis_confidence === 'alta'
+                        ? 'green'
+                        : lead.analysis_confidence === 'media'
+                        ? 'yellow'
+                        : 'red'
+                    }
+                  >
+                    {String(lead.analysis_confidence)}
+                  </Badge>
+                ) : undefined
+              }
             />
             {lead.lead_source_detail && (
               <div className="col-span-2">
@@ -554,6 +585,31 @@ export default function LeadDetailPage() {
               </div>
             </div>
           )}
+          {Array.isArray(advisor.advisors_involved) &&
+            (advisor.advisors_involved as string[]).length > 0 && (
+              <div className="mb-3 text-xs">
+                <div className="text-slate-500 mb-1">Asesores involucrados:</div>
+                <div className="flex flex-wrap gap-1">
+                  {(advisor.advisors_involved as string[]).map((n, i) => (
+                    <Badge key={i} tone="gray">{n}</Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+          <div className="flex flex-wrap gap-2 mb-3">
+            {advisor.speed_compliance === true && (
+              <Badge tone="green">✓ Respondió a tiempo (SLA 10 min)</Badge>
+            )}
+            {advisor.speed_compliance === false && (
+              <Badge tone="red">✗ Violó SLA de 10 min</Badge>
+            )}
+            {advisor.followup_compliance === true && (
+              <Badge tone="green">✓ Hizo seguimiento</Badge>
+            )}
+            {advisor.followup_compliance === false && (
+              <Badge tone="red">✗ Sin seguimiento</Badge>
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-3 text-sm">
             <Field label="Velocidad" value={advisor.speed_score !== undefined ? `${advisor.speed_score}/10` : undefined} />
             <Field label="Calificación" value={advisor.qualification_score !== undefined ? `${advisor.qualification_score}/10` : undefined} />
@@ -626,9 +682,57 @@ export default function LeadDetailPage() {
               </div>
             </div>
           </div>
+          {outcome.perdido_por && outcome.perdido_por !== 'no_aplica' && (
+            <div className="mt-3">
+              <Field
+                label="Causa de la pérdida"
+                value={
+                  <Badge
+                    tone={
+                      String(outcome.perdido_por).startsWith('asesor_')
+                        ? 'red'
+                        : 'yellow'
+                    }
+                  >
+                    {String(outcome.perdido_por).replace(/_/g, ' ')}
+                  </Badge>
+                }
+              />
+            </div>
+          )}
+          {outcome.peak_intent_verbatim && (
+            <div className="mt-4 border-l-4 border-emerald-400 pl-3 py-1 bg-emerald-50 rounded">
+              <div className="text-[10px] uppercase text-emerald-700 font-medium">
+                Momento de máxima intención (golden moment)
+              </div>
+              <blockquote className="text-sm text-slate-800 italic mt-1">
+                "{outcome.peak_intent_verbatim as string}"
+              </blockquote>
+            </div>
+          )}
+          {outcome.loss_point_verbatim && (
+            <div className="mt-3 border-l-4 border-rose-400 pl-3 py-1 bg-rose-50 rounded">
+              <div className="text-[10px] uppercase text-rose-700 font-medium">
+                Punto exacto donde se rompió
+              </div>
+              <blockquote className="text-sm text-slate-800 italic mt-1">
+                "{outcome.loss_point_verbatim as string}"
+              </blockquote>
+            </div>
+          )}
+          {outcome.next_concrete_action && (
+            <div className="mt-3 border-l-4 border-brand-400 pl-3 py-2 bg-brand-50 rounded">
+              <div className="text-[10px] uppercase text-brand-700 font-medium mb-1">
+                🎯 Próxima acción sugerida
+              </div>
+              <div className="text-sm text-slate-900 font-medium">
+                {outcome.next_concrete_action as string}
+              </div>
+            </div>
+          )}
           {outcome.recovery_strategy && (
             <div className="mt-4 pt-3 border-t border-slate-200">
-              <div className="text-xs font-medium text-slate-700 mb-1">Estrategia sugerida</div>
+              <div className="text-xs font-medium text-slate-700 mb-1">Estrategia de recuperación</div>
               <div className="text-sm text-slate-800">{outcome.recovery_strategy as string}</div>
             </div>
           )}

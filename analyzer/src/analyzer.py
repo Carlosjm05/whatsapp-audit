@@ -122,11 +122,25 @@ def compute_metrics(text: str) -> Dict[str, Any]:
                 and first_response_minutes is None):
             first_response_minutes = (m.ts - first_lead_ts).total_seconds() / 60.0
 
+    # Violaciones del SLA de 10 min. Excluye ventanas nocturnas (21:00-07:00)
+    # en horario local — no cuenta como error si el lead escribió a las 2am.
+    SLA_MIN = 10
+    NIGHT_HOURS = {21, 22, 23, 0, 1, 2, 3, 4, 5, 6}
+    sla_violations: List[Dict[str, Any]] = []
     for i in range(1, len(msgs)):
         prev, cur = msgs[i-1], msgs[i]
         if prev.role == "LEAD" and cur.role == "ASESOR":
             gap = (cur.ts - prev.ts).total_seconds() / 60.0
             response_gaps.append(gap)
+            # Skip si el mensaje del lead llegó en horario nocturno.
+            if prev.ts.hour in NIGHT_HOURS:
+                continue
+            if gap > SLA_MIN:
+                sla_violations.append({
+                    "lead_msg_at": prev.ts.strftime("%Y-%m-%d %H:%M"),
+                    "advisor_msg_at": cur.ts.strftime("%Y-%m-%d %H:%M"),
+                    "gap_minutes": round(gap, 1),
+                })
 
     avg_resp = round(mean(response_gaps), 2) if response_gaps else None
 
@@ -137,19 +151,19 @@ def compute_metrics(text: str) -> Dict[str, Any]:
     if longest_gap_hours is not None:
         longest_gap_hours = round(longest_gap_hours, 2)
 
-    # Umbrales (minutos). El rango antiguo dejaba "malo" cubriendo 2h-24h,
-    # demasiado ancho para ser accionable.
+    # Umbrales (minutos). SLA duro de Óscar: cualquier respuesta > 10 min
+    # es error del asesor.
     if first_response_minutes is None:
         cat = "critico"
-    elif first_response_minutes <= 5:
+    elif first_response_minutes <= 2:
         cat = "excelente"
-    elif first_response_minutes <= 30:
+    elif first_response_minutes <= 5:
         cat = "bueno"
-    elif first_response_minutes <= 120:      # 30min - 2h
+    elif first_response_minutes <= 10:    # dentro del SLA
         cat = "regular"
-    elif first_response_minutes <= 60 * 8:   # 2h - 8h
+    elif first_response_minutes <= 30:    # fuera del SLA
         cat = "malo"
-    else:                                     # > 8h
+    else:                                  # > 30 min
         cat = "critico"
 
     hour_counts: Dict[int, int] = {}
@@ -173,6 +187,8 @@ def compute_metrics(text: str) -> Dict[str, Any]:
         "longest_gap_hours": longest_gap_hours,
         "response_time_category": cat,
         "advisor_active_hours": active,
+        "sla_violations": sla_violations,
+        "sla_violations_count": len(sla_violations),
     }
 
 
@@ -193,6 +209,21 @@ def _format_hints(metadata: Dict[str, Any], computed: Dict[str, Any],
     ):
         if computed.get(k) is not None:
             lines.append(f"- {k}: {computed[k]}")
+
+    # SLA de 10 min: pasar conteo y muestras al LLM para que las
+    # incluya en errors_list con evidencia específica.
+    v_count = computed.get("sla_violations_count", 0)
+    if v_count > 0:
+        lines.append(f"- sla_10min_violaciones_total: {v_count} (cada una es error)")
+        # Pasar hasta 5 violaciones concretas con timestamps.
+        samples = (computed.get("sla_violations") or [])[:5]
+        for v in samples:
+            lines.append(
+                f"  - lead escribio {v['lead_msg_at']}, asesor "
+                f"respondio {v['advisor_msg_at']} ({v['gap_minutes']} min)"
+            )
+        if v_count > 5:
+            lines.append(f"  - ... y {v_count - 5} mas")
 
     # Quién habló último — señal crítica para el outcome correcto.
     msgs = parse_transcript(transcript)

@@ -23,6 +23,93 @@ def _parse_lead_id(lead_id: str) -> str:
         raise HTTPException(status_code=400, detail="ID de lead inválido")
 
 
+# ─── Leads fantasma ───────────────────────────────────────────
+@router.get("/ghosts")
+def list_ghost_leads(
+    min_intent: int = Query(6, ge=1, le=10,
+        description="Intent score mínimo del lead (default 6)"),
+    min_days: int = Query(15, ge=0,
+        description="Días mínimos sin contacto (default 15)"),
+    only_advisor_fault: bool = Query(False,
+        description="Solo mostrar pérdidas por culpa del asesor"),
+    limit: int = Query(100, ge=1, le=500),
+    _user: str = Depends(get_current_user),
+) -> dict:
+    """Leads con intención alta que se perdieron (o se enfriaron) y llevan
+    días sin contacto. El objetivo de Óscar: resucitarlos.
+
+    Prioriza los perdidos por culpa del asesor (más fáciles de recuperar)."""
+    where = [
+        "li.intent_score IS NOT NULL",
+        "li.intent_score >= %s",
+        "co.final_status IN ('se_enfrio','ghosteado_por_asesor',"
+        "'ghosteado_por_lead','seguimiento_activo','nunca_calificado')",
+        "co.is_recoverable = TRUE",
+        "EXTRACT(EPOCH FROM (NOW() - l.last_contact_at))/86400 >= %s",
+    ]
+    params: list = [min_intent, min_days]
+
+    if only_advisor_fault:
+        where.append("co.perdido_por LIKE 'asesor_%%'")
+
+    where_sql = " AND ".join(where)
+    sql = f"""
+        SELECT
+          l.id,
+          l.conversation_id,
+          l.phone,
+          l.real_name,
+          l.whatsapp_name,
+          l.city,
+          l.occupation,
+          l.age_range,
+          l.family_context,
+          ascr.advisor_name,
+          ascr.advisors_involved,
+          ascr.speed_compliance,
+          ascr.followup_compliance,
+          ascr.overall_score,
+          li.intent_score,
+          li.urgency,
+          lf.budget_estimated_cop,
+          lf.budget_range,
+          lin.product_type,
+          lin.project_name,
+          co.final_status,
+          co.perdido_por,
+          co.recovery_probability,
+          co.recovery_priority,
+          co.loss_point_verbatim,
+          co.peak_intent_verbatim,
+          co.recovery_message_suggestion,
+          co.next_concrete_action,
+          co.alternative_product,
+          to_char(l.last_contact_at AT TIME ZONE 'UTC',
+                  'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_contact_at,
+          EXTRACT(EPOCH FROM (NOW() - l.last_contact_at))::int / 86400 AS days_since_contact
+        FROM leads l
+        JOIN conversation_outcomes co ON co.lead_id = l.id
+        JOIN lead_intent li ON li.lead_id = l.id
+        LEFT JOIN advisor_scores ascr ON ascr.lead_id = l.id
+        LEFT JOIN lead_financials lf ON lf.lead_id = l.id
+        LEFT JOIN lead_interests lin ON lin.lead_id = l.id
+        WHERE {where_sql}
+        ORDER BY
+          CASE WHEN co.perdido_por LIKE 'asesor_%%' THEN 0 ELSE 1 END,
+          CASE co.recovery_priority
+            WHEN 'esta_semana' THEN 1
+            WHEN 'este_mes' THEN 2
+            WHEN 'puede_esperar' THEN 3
+            ELSE 4
+          END,
+          li.intent_score DESC,
+          lf.budget_estimated_cop DESC NULLS LAST
+        LIMIT %s
+    """
+    rows = fetch_all(sql, params + [limit])
+    return {"total": len(rows), "rows": rows}
+
+
 @router.get("/recoverable", response_model=PagedRecoverableLeads)
 def list_recoverable_leads(
     priority: Optional[str] = Query(None, description="recovery_priority filter"),

@@ -130,6 +130,13 @@ CREATE TABLE leads (
     real_name               VARCHAR(255),
     city                    VARCHAR(255),
     zone                    VARCHAR(255),
+    -- Demografía inferida del chat (prompt v2, 2026-04-17). Nullable.
+    occupation              VARCHAR(150),
+    age_range               VARCHAR(20)
+                            CHECK (age_range IS NULL OR age_range IN ('18-25','25-35','35-50','50-65','65+','desconocido')),
+    family_context          TEXT,
+    analysis_confidence     VARCHAR(10)
+                            CHECK (analysis_confidence IS NULL OR analysis_confidence IN ('alta','media','baja')),
     lead_source             VARCHAR(50)
                             CHECK (lead_source IN ('anuncio_facebook', 'anuncio_instagram', 'google_ads', 'referido', 'busqueda_organica', 'portal_inmobiliario', 'otro', 'desconocido')),
     lead_source_detail      TEXT,
@@ -283,6 +290,8 @@ CREATE TABLE advisor_scores (
     conversation_id             UUID NOT NULL REFERENCES raw_conversations(id) ON DELETE CASCADE,
     advisor_name                VARCHAR(255),
     advisor_phone               VARCHAR(20),
+    -- Todos los asesores que intervinieron (en WhatsApp compartido).
+    advisors_involved           TEXT[] DEFAULT ARRAY[]::TEXT[],
     speed_score                 SMALLINT CHECK (speed_score BETWEEN 1 AND 10),
     qualification_score         SMALLINT CHECK (qualification_score BETWEEN 1 AND 10),
     product_presentation_score  SMALLINT CHECK (product_presentation_score BETWEEN 1 AND 10),
@@ -290,6 +299,9 @@ CREATE TABLE advisor_scores (
     closing_attempt_score       SMALLINT CHECK (closing_attempt_score BETWEEN 1 AND 10),
     followup_score              SMALLINT CHECK (followup_score BETWEEN 1 AND 10),
     overall_score               DECIMAL(4,2),
+    -- Señales binarias (SLA duro de Oscar).
+    speed_compliance            BOOLEAN,
+    followup_compliance         BOOLEAN,
     errors_list                 TEXT[],
     strengths_list              TEXT[],
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -329,6 +341,18 @@ CREATE TABLE conversation_outcomes (
     alternative_product         TEXT,
     recovery_priority           VARCHAR(20)
                                 CHECK (recovery_priority IN ('esta_semana', 'este_mes', 'puede_esperar', 'no_aplica')),
+    -- Causa granular de la pérdida (prompt v2).
+    perdido_por                 VARCHAR(40)
+                                CHECK (perdido_por IS NULL OR perdido_por IN (
+                                    'asesor_lento','asesor_sin_seguimiento','asesor_no_califico',
+                                    'asesor_no_cerro','asesor_info_incompleta',
+                                    'asesor_no_consulto_de_vuelta',
+                                    'lead_desaparecio','lead_fuera_portafolio','lead_sin_decision',
+                                    'lead_presupuesto','lead_competencia','ambos','no_aplica'
+                                )),
+    loss_point_verbatim         TEXT,
+    peak_intent_verbatim        TEXT,
+    next_concrete_action        TEXT,
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
