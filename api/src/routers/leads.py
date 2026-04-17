@@ -92,8 +92,8 @@ def list_recoverable_leads(
           lf.budget_range,
           lin.product_type,
           lin.project_name,
-          to_char(l.first_contact_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS first_contact_at,
-          to_char(l.last_contact_at,  'YYYY-MM-DD"T"HH24:MI:SSOF') AS last_contact_at,
+          to_char(l.first_contact_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS first_contact_at,
+          to_char(l.last_contact_at  AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_contact_at,
           ascr.overall_score
         FROM leads l
         JOIN conversation_outcomes co ON co.lead_id = l.id
@@ -166,8 +166,8 @@ def get_analysis_history(lead_id: str, _user: str = Depends(get_current_user)):
         """
         SELECT id, lead_id, triggered_by, status, model_used,
                cost_usd::float AS cost_usd,
-               to_char(started_at,   'YYYY-MM-DD"T"HH24:MI:SSOF') AS started_at,
-               to_char(completed_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS completed_at,
+               to_char(started_at   AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS started_at,
+               to_char(completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS completed_at,
                error_message, diff_summary
           FROM lead_analysis_history
          WHERE lead_id = %s
@@ -274,8 +274,8 @@ def search_leads(
           li.intent_score, li.urgency,
           lf.budget_estimated_cop, lf.budget_range,
           lin.product_type, lin.project_name,
-          to_char(l.first_contact_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS first_contact_at,
-          to_char(l.last_contact_at,  'YYYY-MM-DD"T"HH24:MI:SSOF') AS last_contact_at,
+          to_char(l.first_contact_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS first_contact_at,
+          to_char(l.last_contact_at  AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_contact_at,
           ascr.overall_score
         FROM leads l
         LEFT JOIN conversation_outcomes co ON co.lead_id = l.id
@@ -324,7 +324,7 @@ def get_lead_conversation(
         SELECT
             m.id,
             m.message_id,
-            to_char(m.timestamp, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS timestamp,
+            to_char(m.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS timestamp,
             m.sender,
             m.sender_name,
             m.message_type,

@@ -145,7 +145,7 @@ def advisor_detail(name: str, _user: str = Depends(get_current_user)) -> dict:
         """
         SELECT l.id, l.whatsapp_name, l.real_name, l.phone,
                co.final_status, co.is_recoverable, ascr.overall_score,
-               to_char(l.last_contact_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS last_contact_at
+               to_char(l.last_contact_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_contact_at
           FROM advisor_scores ascr
           JOIN leads l ON l.id = ascr.lead_id
           LEFT JOIN conversation_outcomes co ON co.lead_id = l.id

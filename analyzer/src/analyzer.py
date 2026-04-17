@@ -306,6 +306,23 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
         log.warning("lead %s transcript truncado a %d chars", lead_id, len(transcript))
 
     computed = compute_metrics(transcript)
+    # Preferir los timestamps reales de raw_conversations (incluyen imágenes,
+    # videos, documentos), no los del transcript (solo text/audio). Antes
+    # leads con última foto/sticker aparecían con last_contact_at viejo.
+    if lead.get("first_message_at"):
+        computed["first_contact_at"] = lead["first_message_at"].isoformat() \
+            if hasattr(lead["first_message_at"], "isoformat") \
+            else lead["first_message_at"]
+    if lead.get("last_message_at"):
+        computed["last_contact_at"] = lead["last_message_at"].isoformat() \
+            if hasattr(lead["last_message_at"], "isoformat") \
+            else lead["last_message_at"]
+    # Recalcular conversation_days con los timestamps reales.
+    fm = lead.get("first_message_at")
+    lm = lead.get("last_message_at")
+    if fm and lm and hasattr(fm, "date") and hasattr(lm, "date"):
+        computed["conversation_days"] = max(1, (lm.date() - fm.date()).days + 1)
+
     metadata = {"phone": lead["phone"], "whatsapp_name": lead["whatsapp_name"]}
     hints = _format_hints(metadata, computed)
 

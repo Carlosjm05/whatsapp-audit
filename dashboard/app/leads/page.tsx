@@ -7,9 +7,36 @@ import type { RecoverableLeadsResponse, RecoverableLead } from '@/types/api';
 import PageHeader from '@/components/PageHeader';
 import DataTable, { Column } from '@/components/DataTable';
 import { ErrorState } from '@/components/LoadingState';
-import { formatCOP, formatDate, formatPct, priorityBadge } from '@/lib/format';
+import { formatCOP, formatDate } from '@/lib/format';
 import { Download, Filter, Search } from 'lucide-react';
 import { useToast } from '@/components/Toast';
+
+function displayName(r: RecoverableLead): string {
+  return (
+    (r.real_name as string) ||
+    (r.whatsapp_name as string) ||
+    (r.phone as string) ||
+    '—'
+  );
+}
+
+function probabilityBadge(p?: string): string {
+  if (p === 'alta') return 'bg-emerald-100 text-emerald-800';
+  if (p === 'media') return 'bg-amber-100 text-amber-800';
+  if (p === 'baja') return 'bg-rose-100 text-rose-800';
+  return 'bg-slate-100 text-slate-700';
+}
+
+function priorityBadgeClass(p?: string): string {
+  if (p === 'esta_semana') return 'bg-rose-100 text-rose-800';
+  if (p === 'este_mes') return 'bg-amber-100 text-amber-800';
+  if (p === 'puede_esperar') return 'bg-slate-100 text-slate-700';
+  return 'bg-slate-100 text-slate-500';
+}
+
+function humanize(v?: string): string {
+  return (v || '').replace(/_/g, ' ');
+}
 
 export default function LeadsPage() {
   const router = useRouter();
@@ -33,87 +60,111 @@ export default function LeadsPage() {
     if (search) params.set('search', search);
     params.set('limit', '500');
 
-    (async () => {
-      try {
-        const res = await fetchApi<RecoverableLeadsResponse>(
-          `/api/leads/recoverable?${params.toString()}`
-        );
-        if (active) setData(res);
-        if (active) setError(null);
-      } catch (err) {
-        if (active) setError(err instanceof Error ? err.message : 'Error');
-      } finally {
-        if (active) setLoading(false);
-      }
-    })();
+    const timer = setTimeout(() => {
+      (async () => {
+        try {
+          const res = await fetchApi<RecoverableLeadsResponse>(
+            `/api/leads/recoverable?${params.toString()}`
+          );
+          if (active) {
+            setData(res);
+            setError(null);
+          }
+        } catch (err) {
+          if (active) setError(err instanceof Error ? err.message : 'Error');
+        } finally {
+          if (active) setLoading(false);
+        }
+      })();
+    }, 300); // debounce
+
     return () => {
       active = false;
+      clearTimeout(timer);
     };
   }, [priority, probability, advisor, search]);
 
   const advisors = useMemo(() => {
     const set = new Set<string>();
-    data?.items?.forEach((l) => l.advisor && set.add(l.advisor));
+    data?.rows?.forEach((l) => {
+      if (l.advisor_name) set.add(l.advisor_name as string);
+    });
     return Array.from(set).sort();
   }, [data]);
 
   const columns: Column<RecoverableLead>[] = [
     {
-      key: 'clientName',
+      key: 'cliente',
       header: 'Cliente',
-      accessor: (r) => r.clientName,
+      accessor: (r) => displayName(r),
       sortable: true,
       render: (r) => (
         <div>
-          <div className="font-medium text-slate-900">{r.clientName || '—'}</div>
-          <div className="text-xs text-slate-500">{r.phone || ''}</div>
+          <div className="font-medium text-slate-900">{displayName(r)}</div>
+          <div className="text-xs text-slate-500">{(r.phone as string) || ''}</div>
         </div>
       )
     },
     {
-      key: 'advisor',
+      key: 'advisor_name',
       header: 'Asesor',
-      accessor: (r) => r.advisor,
-      sortable: true
+      accessor: (r) => r.advisor_name ?? '',
+      sortable: true,
+      render: (r) => (r.advisor_name as string) || '—'
     },
     {
-      key: 'priority',
+      key: 'recovery_priority',
       header: 'Prioridad',
-      accessor: (r) => r.priority,
+      accessor: (r) => r.recovery_priority ?? '',
       sortable: true,
       render: (r) => (
-        <span className={`badge ${priorityBadge(r.priority)}`}>
-          {r.priority || '—'}
+        <span className={`badge ${priorityBadgeClass(r.recovery_priority as string)}`}>
+          {humanize(r.recovery_priority as string) || '—'}
         </span>
       )
     },
     {
-      key: 'recoveryProbability',
-      header: 'Prob. recuperación',
-      accessor: (r) => r.recoveryProbability,
+      key: 'recovery_probability',
+      header: 'Probabilidad',
+      accessor: (r) => r.recovery_probability ?? '',
       sortable: true,
-      render: (r) => formatPct(r.recoveryProbability, 0)
+      render: (r) => (
+        <span className={`badge ${probabilityBadge(r.recovery_probability as string)}`}>
+          {(r.recovery_probability as string) || '—'}
+        </span>
+      )
     },
     {
-      key: 'estimatedValue',
-      header: 'Valor estimado',
-      accessor: (r) => r.estimatedValue,
+      key: 'intent_score',
+      header: 'Intención',
+      accessor: (r) => Number(r.intent_score) || 0,
+      sortable: true,
+      render: (r) =>
+        r.intent_score !== undefined && r.intent_score !== null
+          ? `${r.intent_score}/10`
+          : '—'
+    },
+    {
+      key: 'budget_estimated_cop',
+      header: 'Presupuesto',
+      accessor: (r) => Number(r.budget_estimated_cop) || 0,
       sortable: true,
       align: 'right',
-      render: (r) => formatCOP(r.estimatedValue)
+      render: (r) => formatCOP(r.budget_estimated_cop as number | string | undefined)
     },
     {
-      key: 'projectInterest',
+      key: 'project_name',
       header: 'Proyecto',
-      accessor: (r) => r.projectInterest,
-      sortable: true
+      accessor: (r) => r.project_name ?? '',
+      sortable: true,
+      render: (r) => (r.project_name as string) || '—'
     },
     {
-      key: 'lastContactAt',
+      key: 'last_contact_at',
       header: 'Último contacto',
-      accessor: (r) => r.lastContactAt,
+      accessor: (r) => r.last_contact_at ?? '',
       sortable: true,
-      render: (r) => formatDate(r.lastContactAt)
+      render: (r) => formatDate(r.last_contact_at as string | undefined)
     }
   ];
 
@@ -135,6 +186,9 @@ export default function LeadsPage() {
     }
   }
 
+  const total = data?.total ?? 0;
+  const shown = data?.rows?.length ?? 0;
+
   return (
     <div>
       <PageHeader
@@ -153,34 +207,37 @@ export default function LeadsPage() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <div>
-            <label className="label">Prioridad</label>
+            <label htmlFor="flt-priority" className="label">Prioridad</label>
             <select
+              id="flt-priority"
               className="input"
               value={priority}
               onChange={(e) => setPriority(e.target.value)}
             >
               <option value="">Todas</option>
+              <option value="esta_semana">Esta semana</option>
+              <option value="este_mes">Este mes</option>
+              <option value="puede_esperar">Puede esperar</option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="flt-prob" className="label">Probabilidad</label>
+            <select
+              id="flt-prob"
+              className="input"
+              value={probability}
+              onChange={(e) => setProbability(e.target.value)}
+            >
+              <option value="">Cualquiera</option>
               <option value="alta">Alta</option>
               <option value="media">Media</option>
               <option value="baja">Baja</option>
             </select>
           </div>
           <div>
-            <label className="label">Probabilidad mínima</label>
+            <label htmlFor="flt-advisor" className="label">Asesor</label>
             <select
-              className="input"
-              value={probability}
-              onChange={(e) => setProbability(e.target.value)}
-            >
-              <option value="">Cualquiera</option>
-              <option value="70">≥ 70%</option>
-              <option value="50">≥ 50%</option>
-              <option value="30">≥ 30%</option>
-            </select>
-          </div>
-          <div>
-            <label className="label">Asesor</label>
-            <select
+              id="flt-advisor"
               className="input"
               value={advisor}
               onChange={(e) => setAdvisor(e.target.value)}
@@ -194,12 +251,13 @@ export default function LeadsPage() {
             </select>
           </div>
           <div>
-            <label className="label">Búsqueda</label>
+            <label htmlFor="flt-search" className="label">Búsqueda</label>
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
+                id="flt-search"
                 className="input pl-9"
-                placeholder="Nombre, teléfono, proyecto…"
+                placeholder="Nombre, teléfono…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
@@ -219,16 +277,15 @@ export default function LeadsPage() {
       {!loading && !error && (
         <>
           <div className="mb-2 text-sm text-slate-500">
-            {(data?.items?.length ?? 0)} resultado
-            {(data?.items?.length ?? 0) === 1 ? '' : 's'}
-            {data?.total != null && ` de ${data.total}`}
+            {shown} resultado{shown === 1 ? '' : 's'}
+            {total > shown && ` de ${total}`}
           </div>
           <DataTable
             columns={columns}
-            rows={data?.items || []}
+            rows={data?.rows || []}
             onRowClick={(r) => router.push(`/leads/${r.id}`)}
-            initialSortKey="recoveryProbability"
-            initialSortDir="desc"
+            initialSortKey="recovery_priority"
+            initialSortDir="asc"
             empty="No se encontraron leads recuperables con los filtros aplicados."
           />
         </>

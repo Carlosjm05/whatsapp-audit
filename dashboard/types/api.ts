@@ -43,24 +43,40 @@ export interface OverviewResponse {
   avg_advisor_score: number | null;
 }
 
+// Shape real que devuelve /api/leads/recoverable. Snake_case porque el
+// router hace SELECT directo y no mapea (ver api/src/routers/leads.py).
 export interface RecoverableLead {
   [key: string]: unknown;
   id: string;
-  clientName: string;
+  conversation_id?: string;
   phone?: string;
-  advisor?: string;
-  status?: string;
-  priority?: 'alta' | 'media' | 'baja' | string;
-  recoveryProbability?: number;
-  estimatedValue?: number;
-  lastContactAt?: string;
-  projectInterest?: string;
-  intentScore?: number;
+  whatsapp_name?: string;
+  real_name?: string;
+  city?: string;
+  zone?: string;
+  advisor_name?: string;
+  final_status?: string;
+  is_recoverable?: boolean;
+  recovery_probability?: 'alta' | 'media' | 'baja' | 'no_aplica' | string;
+  recovery_priority?: 'esta_semana' | 'este_mes' | 'puede_esperar' | 'no_aplica' | string;
+  recovery_strategy?: string;
+  recovery_message_suggestion?: string;
+  intent_score?: number | string;
+  urgency?: string;
+  budget_estimated_cop?: number | string;
+  budget_range?: string;
+  product_type?: string;
+  project_name?: string;
+  first_contact_at?: string;
+  last_contact_at?: string;
+  overall_score?: number | string;
 }
 
 export interface RecoverableLeadsResponse {
-  items: RecoverableLead[];
   total: number;
+  limit: number;
+  offset: number;
+  rows: RecoverableLead[];
 }
 
 // ─── LEAD DETAIL (estructura anidada que devuelve /api/leads/{id}) ──
@@ -293,24 +309,49 @@ export interface TypeCount extends ChartItem {
   count: number;
 }
 
+// Shape real de /api/advisors (snake_case).
 export interface AdvisorRanking {
   [key: string]: unknown;
-  name: string;
-  conversations: number;
-  leads: number;
-  conversionRate: number;
-  avgResponseTimeMin: number;
-  followupRate: number;
-  overallScore: number;
-  revenueAttributed?: number;
+  advisor_name: string;
+  total_leads: number;
+  sold: number;
+  recoverable: number;
+  avg_overall_score: number | string | null;
+  avg_first_response_minutes: number | string | null;
+  common_errors?: { text: string; count: number }[];
+  common_strengths?: { text: string; count: number }[];
 }
 
-export interface AdvisorDetail extends AdvisorRanking {
-  strengths?: string[];
-  weaknesses?: string[];
-  topProjects?: ProjectLeads[];
-  monthly?: MonthlyAdvisor[];
-  errorsByType?: TypeCount[];
+export interface AdvisorDetail {
+  summary: {
+    advisor_name: string;
+    total_leads: number;
+    sold: number;
+    recoverable: number;
+    avg_overall_score: number | string | null;
+    avg_speed_score: number | string | null;
+    avg_qualification_score: number | string | null;
+    avg_product_presentation_score: number | string | null;
+    avg_objection_handling_score: number | string | null;
+    avg_closing_attempt_score: number | string | null;
+    avg_followup_score: number | string | null;
+    avg_first_response_minutes: number | string | null;
+    avg_response_minutes: number | string | null;
+    avg_longest_gap_hours: number | string | null;
+  };
+  common_errors: { text: string; count: number }[];
+  common_strengths: { text: string; count: number }[];
+  outcome_distribution: { final_status: string; count: number }[];
+  recent_leads: Array<{
+    id: string;
+    whatsapp_name?: string;
+    real_name?: string;
+    phone?: string;
+    final_status?: string;
+    is_recoverable?: boolean;
+    overall_score?: number | string;
+    last_contact_at?: string;
+  }>;
 }
 
 export interface RangeCount extends ChartItem {
