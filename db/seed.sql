@@ -47,6 +47,5 @@ INSERT INTO advisors_catalog (canonical_name, aliases, is_active) VALUES
     ('Tatiana',   ARRAY['tatiana', 'tati'], true),
     ('Pilar',     ARRAY['pilar'], true),
     ('Valentina', ARRAY['valentina', 'vale'], true),
-    ('Oscar',     ARRAY['oscar', 'óscar'], true),
-    ('Daniela',   ARRAY['daniela', 'dani'], true)
+    ('Oscar',     ARRAY['oscar', 'óscar', 'daniela', 'dani'], true)
 ON CONFLICT (canonical_name) DO NOTHING;
