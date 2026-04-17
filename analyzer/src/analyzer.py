@@ -22,6 +22,11 @@ from tenacity import (
 )
 
 from . import db
+from .catalogos import (
+    normalize_asesor,
+    normalize_project_list,
+    normalize_proyecto,
+)
 from .prompt import SYSTEM_PROMPT
 from .validator import AnalysisOutput
 
@@ -171,9 +176,13 @@ def compute_metrics(text: str) -> Dict[str, Any]:
     }
 
 
-def _format_hints(metadata: Dict[str, Any], computed: Dict[str, Any]) -> str:
-    lines = ["DATOS CALCULADOS (no los repitas en tu JSON, son contexto):"]
-    lines.append(f"- teléfono del lead: {metadata.get('phone')}")
+def _format_hints(metadata: Dict[str, Any], computed: Dict[str, Any],
+                  transcript: str) -> str:
+    """Construye hints para Claude. Incluye metadatos, métricas calculadas
+    y una señal clave: quién envió el último mensaje (crítico para
+    distinguir ghosteado_por_asesor vs ghosteado_por_lead)."""
+    lines = ["DATOS CALCULADOS (NO los repitas en tu JSON, son contexto):"]
+    lines.append(f"- telefono del lead: {metadata.get('phone')}")
     lines.append(f"- nombre WhatsApp: {metadata.get('whatsapp_name')}")
     for k in (
         "total_messages", "advisor_messages", "lead_messages",
@@ -184,6 +193,49 @@ def _format_hints(metadata: Dict[str, Any], computed: Dict[str, Any]) -> str:
     ):
         if computed.get(k) is not None:
             lines.append(f"- {k}: {computed[k]}")
+
+    # Quién habló último — señal crítica para el outcome correcto.
+    msgs = parse_transcript(transcript)
+    if msgs:
+        last = msgs[-1]
+        lines.append(
+            f"- ultimo_mensaje_de: {last.role} "
+            f"({'audio' if last.is_audio else 'texto'}) "
+            f"el {last.ts.strftime('%Y-%m-%d %H:%M')}"
+        )
+        # Si el lead escribió último y no ha habido respuesta del asesor
+        # en >24h, sugiere ghosteado_por_asesor.
+        if last.role == "LEAD":
+            lines.append(
+                "- pista: el LEAD fue el ultimo en escribir. Si ya paso "
+                "tiempo significativo sin respuesta del asesor, considera "
+                "'ghosteado_por_asesor' en outcome.final_status."
+            )
+        else:
+            lines.append(
+                "- pista: el ASESOR fue el ultimo en escribir. Si el lead "
+                "no respondio al mensaje del asesor, considera "
+                "'ghosteado_por_lead' o 'se_enfrio' segun el contenido."
+            )
+
+    # Días desde el último contacto (útil para recovery_priority).
+    if computed.get("last_contact_at"):
+        try:
+            lct = computed["last_contact_at"]
+            # isoformat -> datetime
+            if isinstance(lct, str):
+                # Tolerar 'Z' y offsets.
+                lct_clean = lct.replace("Z", "+00:00")
+                lct_dt = datetime.fromisoformat(lct_clean)
+            else:
+                lct_dt = lct
+            # Naive comparison para simplificar.
+            now = datetime.now(tz=lct_dt.tzinfo) if lct_dt.tzinfo else datetime.now()
+            days_since = (now - lct_dt).days
+            lines.append(f"- dias_desde_ultimo_contacto: {days_since}")
+        except Exception:
+            pass
+
     return "\n".join(lines)
 
 
@@ -216,7 +268,7 @@ class ClaudeClient:
     def analyze(self, transcript: str, hints: str) -> Tuple[Dict[str, Any], float]:
         resp = self.client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=8000,
+            max_tokens=12000,
             system=[{
                 "type": "text",
                 "text": SYSTEM_PROMPT,
@@ -324,7 +376,7 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
         computed["conversation_days"] = max(1, (lm.date() - fm.date()).days + 1)
 
     metadata = {"phone": lead["phone"], "whatsapp_name": lead["whatsapp_name"]}
-    hints = _format_hints(metadata, computed)
+    hints = _format_hints(metadata, computed, transcript)
 
     # Errores de red/API de Anthropic: retriables (volverá como pending).
     # Errores de parseo/validación: NO retriables (se marca failed directo
@@ -373,11 +425,27 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
         log.error("lead %s validacion fallida (no retriable): %s", lead_id, e)
         return False, cost
 
+    # Post-procesar: normalizar nombres de proyectos y asesores contra los
+    # catálogos conocidos. Claude a veces confunde ciudades con proyectos
+    # o usa variaciones del nombre del asesor.
+    data_dict = validated.model_dump()
+    if data_dict.get("interest"):
+        data_dict["interest"]["project_name"] = normalize_proyecto(
+            data_dict["interest"].get("project_name")
+        )
+        data_dict["interest"]["all_projects_mentioned"] = normalize_project_list(
+            data_dict["interest"].get("all_projects_mentioned") or []
+        )
+    if data_dict.get("advisor"):
+        data_dict["advisor"]["advisor_name"] = normalize_asesor(
+            data_dict["advisor"].get("advisor_name")
+        )
+
     try:
         db.persist_analysis(
             lead_id,
             conversation_id,
-            validated.model_dump(),
+            data_dict,
             computed,
         )
     except Exception as e:
