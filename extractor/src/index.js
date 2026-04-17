@@ -24,7 +24,11 @@ const logger = createLogger('main');
 
 // ─── CONFIGURACIÓN ──────────────────────────────────────────
 const SESSION_PATH = process.env.SESSION_PATH || '/app/auth_state';
-const SYNC_TIMEOUT_MS = parseInt(process.env.SYNC_TIMEOUT_MS || '180000');
+// Tiempo que esperamos a que WhatsApp termine de mandar messaging-history.set.
+// Default 1 hora. Con 6000+ chats y syncFullHistory=true el teléfono tarda
+// MUCHO en subir todo el historial, especialmente si hay muchos audios.
+// El proceso igual termina antes si llega 'isLatest' en un batch.
+const SYNC_TIMEOUT_MS = parseInt(process.env.SYNC_TIMEOUT_MS || '3600000');
 
 const CONFIG = {
     extractionDelayMin: parseInt(process.env.EXTRACTION_DELAY_MIN || '2000'),
@@ -281,10 +285,31 @@ async function waitForHistorySync() {
     logger.info('═══════════════════════════════════════════');
 }
 
+// ─── Formato ETA humano ─────────────────────────────────────
+function formatETA(sec) {
+    if (!Number.isFinite(sec) || sec <= 0) return '—';
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    if (h > 0) return `${h}h ${m}min`;
+    return `${m}min`;
+}
+
 // ─── PEDIR MÁS HISTORIAL (fetchMessageHistory) ─────────────
+// Solo se llama para chats con POCO contenido del sync inicial.
+// Con 6000 chats + 15 batches × 5s cada uno = 125 horas. Inaceptable.
+// Solución: si el chat ya trae >= MIN_MSGS_FOR_SKIP_FETCH mensajes del
+// sync, confiamos en eso y NO hacemos fetch adicional. Para chats con
+// menos historial, hacemos hasta MAX_BATCHES paginas hacia atrás.
+const MIN_MSGS_FOR_SKIP_FETCH = parseInt(process.env.MIN_MSGS_FOR_SKIP_FETCH || '30', 10);
+const FETCH_HISTORY_MAX_BATCHES = parseInt(process.env.FETCH_HISTORY_MAX_BATCHES || '5', 10);
+const FETCH_HISTORY_SLEEP_MS = parseInt(process.env.FETCH_HISTORY_SLEEP_MS || '3000', 10);
+
 async function requestMoreHistory(socket, jid, existingMessages) {
     if (typeof socket.fetchMessageHistory !== 'function') {
-        logger.info('   fetchMessageHistory no disponible en esta versión de Baileys');
+        return;
+    }
+    // Skip si el sync ya trajo suficiente historial para este chat.
+    if ((existingMessages || []).length >= MIN_MSGS_FOR_SKIP_FETCH) {
         return;
     }
 
@@ -294,8 +319,7 @@ async function requestMoreHistory(socket, jid, existingMessages) {
     const oldest = existingMessages[0];
     if (!oldest) return;
 
-    const MAX_BATCHES = 15;
-    for (let batch = 1; batch <= MAX_BATCHES; batch++) {
+    for (let batch = 1; batch <= FETCH_HISTORY_MAX_BATCHES; batch++) {
         const countBefore = (syncedMessages.get(jid) || []).length;
 
         try {
@@ -310,21 +334,17 @@ async function requestMoreHistory(socket, jid, existingMessages) {
                 oldestMsg.messageTimestamp
             );
         } catch (err) {
-            logger.info(`   fetchMessageHistory terminó (batch ${batch}): ${err.message}`);
+            // fetchMessageHistory puede fallar silenciosamente — no es bloqueante.
             break;
         }
 
-        // Esperar a que lleguen mensajes vía messaging-history.set
-        await sleep(5000);
+        await sleep(FETCH_HISTORY_SLEEP_MS);
 
         const countAfter = (syncedMessages.get(jid) || []).length;
         const newMsgs = countAfter - countBefore;
 
-        if (newMsgs > 0) {
-            logger.info(`   📜 Batch ${batch}: +${newMsgs} mensajes adicionales (total: ${countAfter})`);
-        } else {
-            logger.info(`   📜 Batch ${batch}: sin mensajes nuevos — historial completo`);
-            break;
+        if (newMsgs === 0) {
+            break;  // sin nuevos mensajes → historial agotado o callback no disparó
         }
     }
 }
@@ -429,6 +449,10 @@ async function runExtractMode(options = {}) {
 
         let successCount = 0;
         let failCount = 0;
+        const runStartedAt = Date.now();
+        // Contador de chats EFECTIVAMENTE procesados (excluye los que
+        // se saltaron por checkpoint) para calcular ETA correcto.
+        let processed = 0;
 
         for (let i = 0; i < targetChats.length; i++) {
             if (isShuttingDown) {
@@ -440,32 +464,56 @@ async function runExtractMode(options = {}) {
             const progress = `[${i + 1}/${targetChats.length}]`;
 
             if (alreadyExtracted.has(chat.jid)) {
-                logger.info(`${progress} ⏭️  ${chat.name}: ya extraído (checkpoint). Usa --force para re-extraer.`);
+                // Log silencioso cuando hay muchos skipped. Solo cada 100.
+                if (i % 100 === 0) {
+                    logger.info(`${progress} ⏭️  Saltando chats ya extraídos (checkpoint)...`);
+                }
                 continue;
             }
 
             try {
                 logger.info(`${progress} Extrayendo: ${chat.name} (${chat.messages.length} msgs sincronizados)`);
 
-                // Pedir más historial si es posible
                 await requestMoreHistory(sock, chat.jid, chat.messages);
 
-                // Obtener mensajes actualizados (pueden haber llegado más)
                 const allMessages = syncedMessages.get(chat.jid) || chat.messages;
 
                 await extractor.extractChat(chat.jid, chat.name, allMessages, runId);
                 successCount++;
+                processed++;
 
-                if ((successCount + failCount) % 50 === 0) {
-                    logger.info(`📊 Progreso: ${successCount} exitosos, ${failCount} fallidos`);
+                // Progreso con ETA cada 25 chats. Útil cuando la corrida dura horas.
+                if (processed % 25 === 0) {
+                    const elapsedSec = (Date.now() - runStartedAt) / 1000;
+                    const avgSecPerChat = elapsedSec / processed;
+                    const remaining = targetChats.length - (i + 1);
+                    const etaSec = remaining * avgSecPerChat;
+                    const pct = ((i + 1) / targetChats.length) * 100;
+                    logger.info(
+                        `📊 Progreso: ${successCount} ok · ${failCount} fallidos · ` +
+                        `${pct.toFixed(1)}% · ETA ${formatETA(etaSec)}`
+                    );
                 }
 
-                // Rate limit entre chats
+                // Persistir progreso en DB cada 100 chats procesados para
+                // que Óscar pueda consultar % desde otra terminal sin
+                // interrumpir la corrida.
+                if (processed % 100 === 0) {
+                    try {
+                        await db.updateExtractionRun(runId, {
+                            extracted_chats: successCount,
+                            failed_chats: failCount,
+                        });
+                    } catch (_) { /* no bloquear por errores de write */ }
+                }
+
+                // Rate limit entre chats (NO bajar — protege el número de ban).
                 const delay = randomBetween(CONFIG.extractionDelayMin, CONFIG.extractionDelayMax);
                 await sleep(delay);
 
             } catch (error) {
                 failCount++;
+                processed++;
                 logger.error(`${progress} ❌ Error: ${chat.name}: ${error.message}`);
                 await db.markConversationFailed(chat.jid, error.message);
 
@@ -474,9 +522,9 @@ async function runExtractMode(options = {}) {
                     await sleep(60000);
                 }
             } finally {
-                // Liberar memoria: con ~12k chats y miles de msgs cada uno,
-                // mantener syncedMessages completo en memoria es GB. Cada
-                // chat ya se persistió a DB; no necesitamos sus mensajes.
+                // Liberar memoria: con 6000 chats y miles de msgs cada uno,
+                // mantener syncedMessages completo es GB. Cada chat ya se
+                // persistió a DB; no necesitamos sus mensajes.
                 syncedMessages.delete(chat.jid);
                 chat.messages = null;
             }
