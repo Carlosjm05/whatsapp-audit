@@ -53,8 +53,8 @@ _FALLBACK_ADVISORS: List[Tuple[str, List[str]]] = [
     ("Tatiana", ["tatiana", "tati"]),
     ("Pilar", ["pilar"]),
     ("Valentina", ["valentina", "vale"]),
-    ("Oscar", ["oscar", "óscar"]),
-    ("Daniela", ["daniela", "dani"]),
+    # Oscar y Daniela son la misma persona (confirmado por Óscar).
+    ("Oscar", ["oscar", "óscar", "daniela", "dani"]),
 ]
 
 

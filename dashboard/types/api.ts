@@ -482,10 +482,17 @@ export interface CompetitorsIntel {
 export interface KnowledgeEntry {
   [key: string]: unknown;
   id: string;
-  entry_type: string;
-  title: string;
-  content: string;
-  tags?: string[];
-  createdAt?: string;
-  sourceConversationId?: string;
+  entry_type: string;           // pregunta_frecuente, objecion_comun, etc.
+  category?: string | null;     // tema (ej. "precio", "ubicacion")
+  content_text: string;          // texto principal de la entrada
+  verbatim_examples?: string[];
+  frequency_count?: number;
+  ideal_response?: string | null;
+}
+
+export interface KnowledgeBaseResponse {
+  total: number;
+  limit: number;
+  offset: number;
+  rows: KnowledgeEntry[];
 }

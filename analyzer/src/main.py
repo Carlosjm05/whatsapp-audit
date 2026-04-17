@@ -21,7 +21,10 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     from .analyzer import run_analyze
     result = run_analyze(limit=args.limit)
     print(json.dumps(result, indent=2))
-    return 0 if result["failed"] == 0 else 1
+    # run_analyze devuelve "fallidos" (clave en español). Aceptamos
+    # "failed" también por retrocompat con callers antiguos.
+    fails = result.get("fallidos", result.get("failed", 0))
+    return 0 if fails == 0 else 1
 
 
 def cmd_stats(_: argparse.Namespace) -> int:

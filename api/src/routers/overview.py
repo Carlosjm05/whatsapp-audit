@@ -19,17 +19,18 @@ def get_overview(_user: str = Depends(get_current_user)) -> OverviewResponse:
     total_leads = int(total_leads_row["c"]) if total_leads_row else 0
 
     # Funnel:
-    #   contactado = all leads
-    #   calificado = leads with intent_score >= 50 OR final_status NOT in pre-qualified early-drop set
-    #   visita     = outcomes.final_status IN ('visita_agendada','venta_cerrada') OR metrics.proposed_visit
-    #   venta      = outcomes.final_status = 'venta_cerrada'
+    #   contactado = todos los leads
+    #   calificado = leads con intent_score >= 5 (escala 1-10) — presupuesto,
+    #                propósito y urgencia suficientes para avanzar
+    #   visita     = outcomes.final_status en visita_agendada/venta_cerrada
+    #   venta      = outcomes.final_status = venta_cerrada
     funnel_row = fetch_one(
         """
         SELECT
           (SELECT COUNT(*)::int FROM leads) AS contactado,
           (SELECT COUNT(*)::int
              FROM lead_intent li
-            WHERE li.intent_score IS NOT NULL AND li.intent_score >= 50) AS calificado,
+            WHERE li.intent_score IS NOT NULL AND li.intent_score >= 5) AS calificado,
           (SELECT COUNT(*)::int
              FROM conversation_outcomes co
             WHERE co.final_status IN ('visita_agendada','venta_cerrada')) AS visita,

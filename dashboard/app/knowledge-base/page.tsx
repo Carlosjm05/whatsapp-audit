@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { fetchApi, downloadFile } from '@/lib/api';
-import type { KnowledgeEntry } from '@/types/api';
+import type { KnowledgeEntry, KnowledgeBaseResponse } from '@/types/api';
 import PageHeader from '@/components/PageHeader';
 import DataTable, { Column } from '@/components/DataTable';
 import { ErrorState } from '@/components/LoadingState';
@@ -29,10 +29,16 @@ export default function KnowledgeBasePage() {
     if (search) params.set('search', search);
     (async () => {
       try {
-        const res = await fetchApi<KnowledgeEntry[] | { items: KnowledgeEntry[] }>(
+        const res = await fetchApi<KnowledgeBaseResponse | KnowledgeEntry[]>(
           `/api/knowledge-base?${params.toString()}`
         );
-        const list = Array.isArray(res) ? res : res.items || [];
+        // El API devuelve {total, limit, offset, rows}. Mantengo fallback
+        // a array plano por si alguna vez cambia la forma.
+        const list = Array.isArray(res)
+          ? res
+          : Array.isArray((res as KnowledgeBaseResponse).rows)
+            ? (res as KnowledgeBaseResponse).rows
+            : [];
         if (active) setRows(list);
         if (active) setError(null);
       } catch (err) {
@@ -102,21 +108,29 @@ export default function KnowledgeBasePage() {
         <span className="badge bg-brand-50 text-brand-700">{r.entry_type}</span>
       )
     },
-    { key: 'title', header: 'Título', accessor: (r) => r.title, sortable: true },
     {
-      key: 'content',
+      key: 'category',
+      header: 'Tema',
+      accessor: (r) => r.category || '—',
+      sortable: true,
+      render: (r) => (r.category as string) || '—'
+    },
+    {
+      key: 'content_text',
       header: 'Contenido',
-      accessor: (r) => r.content,
+      accessor: (r) => r.content_text,
       render: (r) => (
-        <span className="line-clamp-2 text-slate-600">{r.content}</span>
+        <span className="line-clamp-2 text-slate-600">{r.content_text}</span>
       )
     },
     {
-      key: 'createdAt',
-      header: 'Creado',
-      accessor: (r) => r.createdAt,
+      key: 'frequency_count',
+      header: 'Frecuencia',
+      accessor: (r) => r.frequency_count ?? 0,
       sortable: true,
-      render: (r) => formatDate(r.createdAt)
+      align: 'right',
+      render: (r) =>
+        r.frequency_count != null ? `×${r.frequency_count}` : '—'
     }
   ];
 
@@ -198,11 +212,13 @@ export default function KnowledgeBasePage() {
                   {selected.entry_type}
                 </span>
                 <h3 className="text-lg font-semibold text-slate-900">
-                  {selected.title}
+                  {(selected.category as string) || 'Sin categoría'}
                 </h3>
-                <div className="text-xs text-slate-500 mt-1">
-                  {formatDate(selected.createdAt)}
-                </div>
+                {selected.frequency_count != null && (
+                  <div className="text-xs text-slate-500 mt-1">
+                    Aparece {selected.frequency_count} vez{selected.frequency_count === 1 ? '' : 'es'}
+                  </div>
+                )}
               </div>
               <button
                 className="btn-ghost"
@@ -211,20 +227,34 @@ export default function KnowledgeBasePage() {
                 Cerrar
               </button>
             </div>
-            <div className="p-5">
-              <div className="text-sm text-slate-800 whitespace-pre-wrap">
-                {selected.content}
+            <div className="p-5 space-y-4">
+              <div>
+                <div className="text-xs font-medium text-slate-600 mb-1">Contenido</div>
+                <div className="text-sm text-slate-800 whitespace-pre-wrap">
+                  {selected.content_text}
+                </div>
               </div>
-              {selected.tags && selected.tags.length > 0 && (
-                <div className="mt-4 flex flex-wrap gap-1">
-                  {selected.tags.map((t) => (
-                    <span
-                      key={t}
-                      className="badge bg-slate-100 text-slate-700"
-                    >
-                      {t}
-                    </span>
-                  ))}
+              {Array.isArray(selected.verbatim_examples) &&
+                selected.verbatim_examples.length > 0 && (
+                  <div>
+                    <div className="text-xs font-medium text-slate-600 mb-1">
+                      Ejemplos textuales
+                    </div>
+                    <ul className="text-sm text-slate-700 space-y-1 list-disc list-inside">
+                      {selected.verbatim_examples.map((v, i) => (
+                        <li key={i} className="italic">"{v}"</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              {selected.ideal_response && (
+                <div>
+                  <div className="text-xs font-medium text-emerald-700 mb-1">
+                    Respuesta ideal sugerida
+                  </div>
+                  <div className="text-sm text-slate-800 border-l-2 border-emerald-400 pl-3 bg-emerald-50 rounded py-2 whitespace-pre-wrap">
+                    {selected.ideal_response as string}
+                  </div>
                 </div>
               )}
             </div>
