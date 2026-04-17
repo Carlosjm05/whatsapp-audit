@@ -17,7 +17,13 @@ const logger = createLogger('extractor');
 
 const MEDIA_TYPES = new Set(['audio', 'image', 'video', 'document']);
 const MEDIA_CONCURRENCY = parseInt(process.env.MEDIA_CONCURRENCY || '5', 10);
-const MEDIA_RETRY_DELAY_MS = parseInt(process.env.MEDIA_RETRY_DELAY_MS || '2000', 10);
+
+function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '0B';
+    if (bytes < 1024) return `${bytes}B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
 
 class Extractor {
     constructor(sock, db, config) {
@@ -216,7 +222,8 @@ class Extractor {
 
     // ─── FASE 2: DESCARGA PARALELA DE MEDIA ────────────────
     async _downloadMediaBatch(queue, convId, jid) {
-        logger.info(`  ⬇️  Descargando ${queue.length} media en paralelo (${MEDIA_CONCURRENCY} concurrentes)...`);
+        const total = queue.length;
+        logger.info(`  ⬇️  Descargando ${total} media en paralelo (${MEDIA_CONCURRENCY} concurrentes)...`);
         let cursor = 0;
         let ok = 0;
         let failed = 0;
@@ -226,24 +233,36 @@ class Extractor {
             while (cursor < queue.length) {
                 const idx = cursor++;
                 const item = queue[idx];
+                const itemNum = idx + 1;
+                const started = Date.now();
 
                 const result = await this._safeDownloadMedia(item.rawMsg, jid, item.type);
+                const ms = Date.now() - started;
+                const dur = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+
                 if (result && result.mediaInfo) {
                     try {
                         await this.db.updateMessageMedia(convId, item.messageId, result.mediaInfo);
                         ok++;
+                        const size = result.mediaInfo.size || 0;
+                        const sizeLabel = size > 0 ? formatBytes(size) : '—';
+                        logger.info(
+                            `     [${itemNum}/${total}] ✓ ${item.type} · ${sizeLabel} · ${dur}`
+                        );
                     } catch (dbErr) {
-                        logger.warn(`  ⚠️  Error guardando media en BD: ${dbErr.message}`);
                         failed++;
+                        logger.warn(
+                            `     [${itemNum}/${total}] ✗ ${item.type} · error DB: ${dbErr.message}`
+                        );
                     }
                 } else {
                     failed++;
-                    if (result && result.expired) expired++;
-                }
-
-                // Log de progreso cada 20 descargas.
-                if ((ok + failed) % 20 === 0) {
-                    logger.info(`     Media progreso: ${ok + failed}/${queue.length} (${ok} ok, ${failed} fallidos)`);
+                    const wasExpired = !!(result && result.expired);
+                    if (wasExpired) expired++;
+                    const label = wasExpired ? 'expirado (403/no disponible)' : 'falló';
+                    logger.info(
+                        `     [${itemNum}/${total}] ✗ ${item.type} · ${label} · ${dur}`
+                    );
                 }
             }
         };
@@ -291,40 +310,23 @@ class Extractor {
     }
 
     // ─── DESCARGAR UNA MEDIA ───────────────────────────────
-    // Los URLs de media de WhatsApp expiran. downloadMediaMessage
-    // acepta reuploadRequest que pide URLs frescas cuando hay 403.
-    // Importante: hay que hacer .bind(sock) para no perder el this.
-    // Silencioso: los fallos se manejan arriba con resumen por chat.
+    // UN solo intento. downloadMediaMessage ya hace reuploadRequest
+    // internamente cuando detecta 403. Si ese intento falla, es porque
+    // el media realmente no está accesible (expirado o reupload fallido).
+    // Reintentar perdería tiempo sin ganancia real.
     async downloadMedia(msg, jid, mediaType) {
         const reuploadRequest = this.sock.updateMediaMessage.bind(this.sock);
         const pinoSilent = P({ level: 'silent' });
 
-        const attemptDownload = async () => {
-            return downloadMediaMessage(
-                msg,
-                'buffer',
-                {},
-                {
-                    logger: pinoSilent,
-                    reuploadRequest,
-                }
-            );
-        };
-
-        let buffer;
-        try {
-            buffer = await attemptDownload();
-        } catch (err) {
-            // Un único reintento refrescando URLs manualmente. Sin log
-            // individual — el resumen al final del chat cuenta los fallos.
-            await sleep(MEDIA_RETRY_DELAY_MS);
-            try {
-                await this.sock.updateMediaMessage(msg);
-            } catch (refreshErr) {
-                throw new Error(`updateMediaMessage falló: ${refreshErr.message}`);
+        const buffer = await downloadMediaMessage(
+            msg,
+            'buffer',
+            {},
+            {
+                logger: pinoSilent,
+                reuploadRequest,
             }
-            buffer = await attemptDownload();
-        }
+        );
 
         if (!buffer || buffer.length === 0) {
             throw new Error('Buffer vacío');
