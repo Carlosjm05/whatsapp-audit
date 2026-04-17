@@ -11,9 +11,15 @@ export function formatCOP(value: number | null | undefined): string {
   }
 }
 
-export function formatNumber(value: number | null | undefined): string {
+export function formatNumber(
+  value: number | null | undefined,
+  digits = 0
+): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '—';
-  return new Intl.NumberFormat('es-CO').format(value);
+  return new Intl.NumberFormat('es-CO', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits
+  }).format(value);
 }
 
 export function formatPct(value: number | null | undefined, digits = 0): string {
