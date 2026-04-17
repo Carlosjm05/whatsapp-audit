@@ -16,6 +16,7 @@ import {
   Search,
   Menu,
   X,
+  Settings,
 } from 'lucide-react';
 
 const nav = [
@@ -28,6 +29,7 @@ const nav = [
   { href: '/errors', label: 'Diagnóstico de errores', icon: AlertTriangle },
   { href: '/competitors', label: 'Competencia', icon: Swords },
   { href: '/knowledge-base', label: 'Base de conocimiento', icon: BookOpen },
+  { href: '/catalogos', label: 'Catálogos', icon: Settings },
 ];
 
 function NavList({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {

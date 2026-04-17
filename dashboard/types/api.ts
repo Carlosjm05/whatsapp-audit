@@ -4,6 +4,29 @@ export interface LoginResponse {
   expires_in: number;
 }
 
+// ─── CATÁLOGOS ───────────────────────────────────────────────
+export interface ProjectCatalog {
+  id: string;
+  canonical_name: string;
+  aliases: string[];
+  project_type?: string | null;
+  city?: string | null;
+  description?: string | null;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AdvisorCatalog {
+  id: string;
+  canonical_name: string;
+  aliases: string[];
+  phone?: string | null;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface FunnelStage {
   [key: string]: unknown;
   stage: string;

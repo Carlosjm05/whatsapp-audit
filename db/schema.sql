@@ -400,3 +400,37 @@ CREATE TABLE lead_analysis_history (
     diff_summary    TEXT,
     raw_output      JSONB
 );
+
+-- ─────────────────────────────────────────────
+-- TABLA: projects_catalog
+-- Catálogo editable de proyectos de Ortiz Finca Raíz.
+-- El analyzer lo usa para normalizar nombres de proyectos detectados.
+-- Administrable desde /catalogos en el dashboard.
+-- ─────────────────────────────────────────────
+CREATE TABLE projects_catalog (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    canonical_name  VARCHAR(255) NOT NULL UNIQUE,
+    aliases         TEXT[] DEFAULT ARRAY[]::TEXT[],
+    project_type    VARCHAR(50),
+    city            VARCHAR(100),
+    description     TEXT,
+    is_active       BOOLEAN DEFAULT true,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_projects_catalog_active ON projects_catalog(is_active);
+
+-- ─────────────────────────────────────────────
+-- TABLA: advisors_catalog
+-- Catálogo editable de asesores. Mismo propósito.
+-- ─────────────────────────────────────────────
+CREATE TABLE advisors_catalog (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    canonical_name  VARCHAR(255) NOT NULL UNIQUE,
+    aliases         TEXT[] DEFAULT ARRAY[]::TEXT[],
+    phone           VARCHAR(20),
+    is_active       BOOLEAN DEFAULT true,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_advisors_catalog_active ON advisors_catalog(is_active);

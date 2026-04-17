@@ -1,25 +1,31 @@
-"""Catálogos de proyectos y asesores conocidos de Ortiz Finca Raíz.
+"""Catálogos de proyectos y asesores de Ortiz Finca Raíz.
 
-Se usan para:
-  1. Dar contexto a Claude en el prompt (evitar que confunda ciudades
-     con nombres de proyectos, o que invente asesores).
-  2. Post-procesar la salida para normalizar nombres (ej. "Brisas"
-     -> "Brisas del Río").
+Se leen desde DB (`projects_catalog` / `advisors_catalog`), con cache
+en memoria (TTL configurable). Esto permite que los catálogos sean
+editables desde el dashboard sin redeploy.
 
-Si agregan un proyecto/asesor nuevo, actualizar este archivo y
-reiniciar el analyzer.
+Si la DB no está disponible al arrancar, se usa un fallback hardcoded
+mínimo (los 13 proyectos y 8 asesores que ya conocíamos) para que el
+analyzer nunca rompa por problemas de infraestructura.
 """
 from __future__ import annotations
 
+import logging
+import os
+import threading
+import time
 import unicodedata
-from typing import Iterable, Optional
+from typing import Iterable, List, Optional, Tuple
+
+log = logging.getLogger("analyzer.catalogos")
+
+# TTL del cache en segundos. 60s significa que si agregas un proyecto
+# en el panel, los próximos análisis lo verán en <= 1 min.
+CATALOG_TTL_SECONDS = int(os.getenv("CATALOG_TTL_SECONDS", "60"))
 
 
-# ─── PROYECTOS ───────────────────────────────────────────────
-# Cada entry: nombre canónico + lista de aliases (sin tildes, minúsculas).
-# El orden importa: los más específicos primero (para que "Mirador de
-# Anapoima campestre" gane sobre "Mirador de Anapoima" si ambos matchean).
-PROYECTOS: list[tuple[str, list[str]]] = [
+# ─── FALLBACK (si DB no está disponible) ─────────────────────
+_FALLBACK_PROJECTS: List[Tuple[str, List[str]]] = [
     ("Oasis del Olimpo", ["oasis del olimpo", "olimpo", "parcelacion olimpo",
                           "parcelación olimpo"]),
     ("Oasis Ecológico", ["oasis ecologico", "oasis ecológico", "oasis"]),
@@ -29,7 +35,8 @@ PROYECTOS: list[tuple[str, list[str]]] = [
     ("Bellavista", ["bellavista"]),
     ("Miramonte", ["miramonte"]),
     ("Cancún", ["cancun", "cancún"]),
-    ("Fincas de San Isidro", ["fincas de san isidro", "san isidro", "fincas san isidro"]),
+    ("Fincas de San Isidro", ["fincas de san isidro", "san isidro",
+                              "fincas san isidro"]),
     ("Cielito Lindo", ["cielito lindo", "cielito"]),
     ("Mirador de Anapoima campestre",
         ["mirador de anapoima campestre", "mirador anapoima campestre"]),
@@ -39,8 +46,7 @@ PROYECTOS: list[tuple[str, list[str]]] = [
     ("Cardón", ["cardon", "cardón"]),
 ]
 
-# ─── ASESORES ────────────────────────────────────────────────
-ASESORES: list[tuple[str, list[str]]] = [
+_FALLBACK_ADVISORS: List[Tuple[str, List[str]]] = [
     ("Ronald", ["ronald"]),
     ("Jhon", ["jhon", "john"]),
     ("Sandra", ["sandra"]),
@@ -52,64 +58,137 @@ ASESORES: list[tuple[str, list[str]]] = [
 ]
 
 
+# ─── CACHE THREAD-SAFE ───────────────────────────────────────
+_cache_lock = threading.Lock()
+_projects_cache: Optional[List[Tuple[str, List[str]]]] = None
+_advisors_cache: Optional[List[Tuple[str, List[str]]]] = None
+_projects_loaded_at: float = 0.0
+_advisors_loaded_at: float = 0.0
+
+
+def _load_projects_from_db() -> Optional[List[Tuple[str, List[str]]]]:
+    """Lee la tabla projects_catalog. Devuelve None si falla."""
+    try:
+        from . import db as analyzer_db
+        with analyzer_db.cursor(commit=False) as cur:
+            cur.execute(
+                """SELECT canonical_name, COALESCE(aliases, ARRAY[]::TEXT[]) AS aliases
+                   FROM projects_catalog
+                   WHERE is_active = TRUE
+                   ORDER BY LENGTH(canonical_name) DESC, canonical_name ASC"""
+            )
+            rows = cur.fetchall()
+        # Orden por longitud del nombre canónico DESC: garantiza que
+        # "Mirador de Anapoima campestre" (más largo) gane sobre
+        # "Mirador de Anapoima" en el matching por substring.
+        return [(r["canonical_name"], list(r["aliases"] or [])) for r in rows]
+    except Exception as e:
+        log.warning("No pude cargar projects_catalog de DB (%s). Usando fallback.", e)
+        return None
+
+
+def _load_advisors_from_db() -> Optional[List[Tuple[str, List[str]]]]:
+    try:
+        from . import db as analyzer_db
+        with analyzer_db.cursor(commit=False) as cur:
+            cur.execute(
+                """SELECT canonical_name, COALESCE(aliases, ARRAY[]::TEXT[]) AS aliases
+                   FROM advisors_catalog
+                   WHERE is_active = TRUE
+                   ORDER BY canonical_name ASC"""
+            )
+            rows = cur.fetchall()
+        return [(r["canonical_name"], list(r["aliases"] or [])) for r in rows]
+    except Exception as e:
+        log.warning("No pude cargar advisors_catalog de DB (%s). Usando fallback.", e)
+        return None
+
+
+def _get_projects() -> List[Tuple[str, List[str]]]:
+    global _projects_cache, _projects_loaded_at
+    now = time.time()
+    with _cache_lock:
+        if (_projects_cache is not None
+                and (now - _projects_loaded_at) < CATALOG_TTL_SECONDS):
+            return _projects_cache
+    # Fuera del lock (operación I/O).
+    fresh = _load_projects_from_db()
+    with _cache_lock:
+        _projects_cache = fresh if fresh else _FALLBACK_PROJECTS
+        _projects_loaded_at = now
+        return _projects_cache
+
+
+def _get_advisors() -> List[Tuple[str, List[str]]]:
+    global _advisors_cache, _advisors_loaded_at
+    now = time.time()
+    with _cache_lock:
+        if (_advisors_cache is not None
+                and (now - _advisors_loaded_at) < CATALOG_TTL_SECONDS):
+            return _advisors_cache
+    fresh = _load_advisors_from_db()
+    with _cache_lock:
+        _advisors_cache = fresh if fresh else _FALLBACK_ADVISORS
+        _advisors_loaded_at = now
+        return _advisors_cache
+
+
+def invalidate_cache() -> None:
+    """Fuerza recarga en la próxima llamada. Útil si el API publicara
+    eventos (no lo hace hoy; el TTL hace el trabajo)."""
+    global _projects_loaded_at, _advisors_loaded_at
+    with _cache_lock:
+        _projects_loaded_at = 0.0
+        _advisors_loaded_at = 0.0
+
+
+# ─── NORMALIZACIÓN ───────────────────────────────────────────
 def _normalize(s: str) -> str:
     """Lower + sin tildes + espacios colapsados."""
     if not s:
         return ""
     s = s.strip().lower()
-    # Quitar tildes/diacríticos.
     s = "".join(
         c for c in unicodedata.normalize("NFD", s)
         if unicodedata.category(c) != "Mn"
     )
-    # Colapsar espacios.
     return " ".join(s.split())
 
 
 def _match_catalog(value: Optional[str],
-                   catalog: list[tuple[str, list[str]]]) -> Optional[str]:
-    """Devuelve el nombre canónico si `value` hace match con algún alias,
-    o None si no encuentra nada. Busca substring match — ej. si el lead
-    dijo "el proyecto brisas del rio me interesa", matchea 'brisas del rio'.
-    """
+                   catalog: List[Tuple[str, List[str]]]) -> Optional[str]:
     if not value:
         return None
     norm = _normalize(value)
     if not norm:
         return None
-    # Orden del catálogo importa: entries más específicos van primero.
     for canonical, aliases in catalog:
+        # Match canónico normalizado (por si el alias no está registrado).
+        if _normalize(canonical) in norm:
+            return canonical
         for alias in aliases:
-            if alias in norm:
+            if _normalize(alias) in norm:
                 return canonical
     return None
 
 
 def normalize_proyecto(name: Optional[str]) -> Optional[str]:
-    """Dado un nombre de proyecto crudo (lo que devuelve Claude), intenta
-    mapear al nombre canónico del catálogo. Si no hace match con ningún
-    alias conocido, devuelve el valor original (Claude pudo haber detectado
-    un proyecto nuevo que aún no está en el catálogo)."""
     if not name:
         return name
-    match = _match_catalog(name, PROYECTOS)
+    match = _match_catalog(name, _get_projects())
     return match if match else name
 
 
 def normalize_asesor(name: Optional[str]) -> Optional[str]:
-    """Dado un nombre de asesor crudo, mapea al canónico. Si no matchea,
-    devuelve el valor original (podría ser un asesor nuevo o un nombre
-    distinto)."""
     if not name:
         return name
-    match = _match_catalog(name, ASESORES)
+    match = _match_catalog(name, _get_advisors())
     return match if match else name
 
 
-def normalize_project_list(names: Iterable[str]) -> list[str]:
-    """Normaliza una lista de proyectos deduplicando por nombre canónico."""
+def normalize_project_list(names: Iterable[str]) -> List[str]:
     seen: set[str] = set()
-    out: list[str] = []
+    out: List[str] = []
     for n in names or []:
         if not isinstance(n, str):
             continue
@@ -122,11 +201,8 @@ def normalize_project_list(names: Iterable[str]) -> list[str]:
 
 
 def proyectos_context_string() -> str:
-    """Devuelve una lista formateada de proyectos conocidos para meter
-    en el prompt."""
-    return "\n".join(f"  - {canonical}" for canonical, _ in PROYECTOS)
+    return "\n".join(f"  - {canonical}" for canonical, _ in _get_projects())
 
 
 def asesores_context_string() -> str:
-    """Devuelve una lista formateada de asesores conocidos para el prompt."""
-    return ", ".join(canonical for canonical, _ in ASESORES)
+    return ", ".join(canonical for canonical, _ in _get_advisors())

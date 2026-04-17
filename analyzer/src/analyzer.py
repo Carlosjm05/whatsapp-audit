@@ -27,7 +27,7 @@ from .catalogos import (
     normalize_project_list,
     normalize_proyecto,
 )
-from .prompt import SYSTEM_PROMPT
+from .prompt import get_system_prompt
 from .validator import AnalysisOutput
 
 
@@ -271,7 +271,7 @@ class ClaudeClient:
             max_tokens=12000,
             system=[{
                 "type": "text",
-                "text": SYSTEM_PROMPT,
+                "text": get_system_prompt(),
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=[{

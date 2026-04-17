@@ -16,6 +16,7 @@ from .config import get_settings
 from .ratelimit import limiter
 from .routers import (
     advisors,
+    catalogs,
     competitors,
     errors as errors_router,
     export,
@@ -86,6 +87,7 @@ app.include_router(competitors.router)
 app.include_router(knowledge_base.router)
 app.include_router(export.router)
 app.include_router(trends.router)
+app.include_router(catalogs.router)
 
 
 # --- Health ---
