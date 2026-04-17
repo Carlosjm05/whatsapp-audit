@@ -179,6 +179,25 @@ export default function LeadDetailPage() {
   const longestGapH = toNum(responseTimes.longest_gap_hours);
   const overallScore = toNum(advisor.overall_score);
 
+  // Campos nuevos (prompt v2). LeadDetail los tipa como Dict[str, Any]
+  // => TypeScript los ve como `unknown` y JSX no acepta unknown como
+  // ReactNode. Cast explícito al inicio.
+  const occupation = lead.occupation as string | undefined;
+  const ageRange = lead.age_range as string | undefined;
+  const familyContext = lead.family_context as string | undefined;
+  const analysisConfidence = lead.analysis_confidence as
+    'alta' | 'media' | 'baja' | undefined;
+  const advisorsInvolved =
+    (advisor.advisors_involved as string[] | undefined) || [];
+  const speedCompliance = advisor.speed_compliance as
+    boolean | null | undefined;
+  const followupCompliance = advisor.followup_compliance as
+    boolean | null | undefined;
+  const perdidoPor = outcome.perdido_por as string | undefined;
+  const peakVerbatim = outcome.peak_intent_verbatim as string | undefined;
+  const lossVerbatim = outcome.loss_point_verbatim as string | undefined;
+  const nextAction = outcome.next_concrete_action as string | undefined;
+
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto">
       {/* Header nav */}
@@ -315,19 +334,14 @@ export default function LeadDetailPage() {
             <Field label="Teléfono" value={lead.phone as string} />
             <Field label="Ciudad de residencia" value={lead.city as string} />
             <Field label="Zona" value={lead.zone as string} />
-            <Field label="Ocupación" value={lead.occupation as string} />
+            <Field label="Ocupación" value={occupation} />
             <Field
               label="Rango de edad"
               value={
-                lead.age_range && lead.age_range !== 'desconocido'
-                  ? (lead.age_range as string)
-                  : undefined
+                ageRange && ageRange !== 'desconocido' ? ageRange : undefined
               }
             />
-            <Field
-              label="Contexto familiar"
-              value={lead.family_context as string}
-            />
+            <Field label="Contexto familiar" value={familyContext} />
             <Field
               label="Fuente"
               value={lead.lead_source ? String(lead.lead_source).replace(/_/g, ' ') : undefined}
@@ -335,17 +349,17 @@ export default function LeadDetailPage() {
             <Field
               label="Confianza del análisis"
               value={
-                lead.analysis_confidence ? (
+                analysisConfidence ? (
                   <Badge
                     tone={
-                      lead.analysis_confidence === 'alta'
+                      analysisConfidence === 'alta'
                         ? 'green'
-                        : lead.analysis_confidence === 'media'
+                        : analysisConfidence === 'media'
                         ? 'yellow'
                         : 'red'
                     }
                   >
-                    {String(lead.analysis_confidence)}
+                    {analysisConfidence}
                   </Badge>
                 ) : undefined
               }
@@ -585,28 +599,27 @@ export default function LeadDetailPage() {
               </div>
             </div>
           )}
-          {Array.isArray(advisor.advisors_involved) &&
-            (advisor.advisors_involved as string[]).length > 0 && (
-              <div className="mb-3 text-xs">
-                <div className="text-slate-500 mb-1">Asesores involucrados:</div>
-                <div className="flex flex-wrap gap-1">
-                  {(advisor.advisors_involved as string[]).map((n, i) => (
-                    <Badge key={i} tone="gray">{n}</Badge>
-                  ))}
-                </div>
+          {advisorsInvolved.length > 0 && (
+            <div className="mb-3 text-xs">
+              <div className="text-slate-500 mb-1">Asesores involucrados:</div>
+              <div className="flex flex-wrap gap-1">
+                {advisorsInvolved.map((n, i) => (
+                  <Badge key={i} tone="gray">{n}</Badge>
+                ))}
               </div>
-            )}
+            </div>
+          )}
           <div className="flex flex-wrap gap-2 mb-3">
-            {advisor.speed_compliance === true && (
+            {speedCompliance === true && (
               <Badge tone="green">✓ Respondió a tiempo (SLA 10 min)</Badge>
             )}
-            {advisor.speed_compliance === false && (
+            {speedCompliance === false && (
               <Badge tone="red">✗ Violó SLA de 10 min</Badge>
             )}
-            {advisor.followup_compliance === true && (
+            {followupCompliance === true && (
               <Badge tone="green">✓ Hizo seguimiento</Badge>
             )}
-            {advisor.followup_compliance === false && (
+            {followupCompliance === false && (
               <Badge tone="red">✗ Sin seguimiento</Badge>
             )}
           </div>
@@ -682,51 +695,45 @@ export default function LeadDetailPage() {
               </div>
             </div>
           </div>
-          {outcome.perdido_por && outcome.perdido_por !== 'no_aplica' && (
+          {perdidoPor && perdidoPor !== 'no_aplica' && (
             <div className="mt-3">
               <Field
                 label="Causa de la pérdida"
                 value={
-                  <Badge
-                    tone={
-                      String(outcome.perdido_por).startsWith('asesor_')
-                        ? 'red'
-                        : 'yellow'
-                    }
-                  >
-                    {String(outcome.perdido_por).replace(/_/g, ' ')}
+                  <Badge tone={perdidoPor.startsWith('asesor_') ? 'red' : 'yellow'}>
+                    {perdidoPor.replace(/_/g, ' ')}
                   </Badge>
                 }
               />
             </div>
           )}
-          {outcome.peak_intent_verbatim && (
+          {peakVerbatim && (
             <div className="mt-4 border-l-4 border-emerald-400 pl-3 py-1 bg-emerald-50 rounded">
               <div className="text-[10px] uppercase text-emerald-700 font-medium">
                 Momento de máxima intención (golden moment)
               </div>
               <blockquote className="text-sm text-slate-800 italic mt-1">
-                "{outcome.peak_intent_verbatim as string}"
+                "{peakVerbatim}"
               </blockquote>
             </div>
           )}
-          {outcome.loss_point_verbatim && (
+          {lossVerbatim && (
             <div className="mt-3 border-l-4 border-rose-400 pl-3 py-1 bg-rose-50 rounded">
               <div className="text-[10px] uppercase text-rose-700 font-medium">
                 Punto exacto donde se rompió
               </div>
               <blockquote className="text-sm text-slate-800 italic mt-1">
-                "{outcome.loss_point_verbatim as string}"
+                "{lossVerbatim}"
               </blockquote>
             </div>
           )}
-          {outcome.next_concrete_action && (
+          {nextAction && (
             <div className="mt-3 border-l-4 border-brand-400 pl-3 py-2 bg-brand-50 rounded">
               <div className="text-[10px] uppercase text-brand-700 font-medium mb-1">
                 🎯 Próxima acción sugerida
               </div>
               <div className="text-sm text-slate-900 font-medium">
-                {outcome.next_concrete_action as string}
+                {nextAction}
               </div>
             </div>
           )}

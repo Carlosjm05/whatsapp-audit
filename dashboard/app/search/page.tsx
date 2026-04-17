@@ -8,14 +8,28 @@ import DataTable, { Column } from '@/components/DataTable';
 import { ErrorState } from '@/components/LoadingState';
 import { formatCOP, formatDate } from '@/lib/format';
 import { Search, Filter, X, Bookmark } from 'lucide-react';
-import type { RecoverableLead } from '@/types/api';
+// Shape local de esta página (mapeado desde snake_case del API).
+interface SearchRow {
+  [key: string]: unknown;
+  id: string;
+  clientName: string;
+  phone?: string;
+  advisor?: string;
+  status?: string;
+  priority?: string;
+  recoveryProbability?: string;
+  estimatedValue?: number | string | null;
+  lastContactAt?: string;
+  projectInterest?: string;
+  intentScore?: number | null;
+}
 import { useToast } from '@/components/Toast';
 
 interface SearchResponse {
   total: number;
   limit: number;
   offset: number;
-  rows: RecoverableLead[];
+  rows: SearchRow[];
 }
 
 interface Filters {
@@ -174,17 +188,18 @@ export default function SearchPage() {
     localStorage.setItem('saved_views', JSON.stringify(next));
   }
 
-  const columns: Column<RecoverableLead>[] = [
+  const columns: Column<SearchRow>[] = [
     { key: 'clientName', header: 'Cliente', accessor: r => r.clientName || '—', sortable: true },
     { key: 'phone', header: 'Teléfono', accessor: r => r.phone || '—' },
     { key: 'intentScore', header: 'Intención', accessor: r => r.intentScore ?? null, sortable: true,
-      render: r => r.intentScore !== undefined
-        ? <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-            r.intentScore >= 8 ? 'bg-emerald-100 text-emerald-800'
-            : r.intentScore >= 4 ? 'bg-amber-100 text-amber-800'
-            : 'bg-rose-100 text-rose-800'
-          }`}>{r.intentScore}</span>
-        : '—' },
+      render: r => {
+        const s = r.intentScore;
+        if (s == null) return '—';
+        const cls = s >= 8 ? 'bg-emerald-100 text-emerald-800'
+                  : s >= 4 ? 'bg-amber-100 text-amber-800'
+                  : 'bg-rose-100 text-rose-800';
+        return <span className={`px-2 py-0.5 rounded text-xs font-medium ${cls}`}>{s}</span>;
+      } },
     { key: 'status', header: 'Estado', accessor: r => r.status || '—',
       render: r => r.status ? String(r.status).replace(/_/g, ' ') : '—' },
     { key: 'advisor', header: 'Asesor', accessor: r => r.advisor || '—' },
@@ -194,8 +209,8 @@ export default function SearchPage() {
       render: r => r.lastContactAt ? formatDate(r.lastContactAt) : '—' },
   ];
 
-  // Map API rows to RecoverableLead shape (they have slightly different field names)
-  const rows: RecoverableLead[] = safeArray<any>(data?.rows).map((r: any) => ({
+  // Map API rows to SearchRow shape (they have slightly different field names)
+  const rows: SearchRow[] = safeArray<any>(data?.rows).map((r: any) => ({
     id: r.id,
     clientName: r.real_name || r.whatsapp_name || r.phone || '—',
     phone: r.phone,
