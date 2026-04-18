@@ -17,6 +17,10 @@ const logger = createLogger('extractor');
 
 const MEDIA_TYPES = new Set(['audio', 'image', 'video', 'document']);
 const MEDIA_CONCURRENCY = parseInt(process.env.MEDIA_CONCURRENCY || '5', 10);
+// Timeout duro por media. Si Baileys se cuelga en un download (pasa
+// ocasionalmente con media raro o red inestable), no esperamos más que
+// esto — cuenta como fallo y seguimos.
+const MEDIA_DOWNLOAD_TIMEOUT_MS = parseInt(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS || '30000', 10);
 
 function formatBytes(bytes) {
     if (!bytes || bytes <= 0) return '0B';
@@ -258,8 +262,13 @@ class Extractor {
                 } else {
                     failed++;
                     const wasExpired = !!(result && result.expired);
+                    const wasTimeout = !!(result && result.timeout);
                     if (wasExpired) expired++;
-                    const label = wasExpired ? 'expirado (403/no disponible)' : 'falló';
+                    const label = wasTimeout
+                        ? `timeout (${Math.round(MEDIA_DOWNLOAD_TIMEOUT_MS / 1000)}s)`
+                        : wasExpired
+                        ? 'expirado (403/no disponible)'
+                        : 'falló';
                     logger.info(
                         `     [${itemNum}/${total}] ✗ ${item.type} · ${label} · ${dur}`
                     );
@@ -277,13 +286,25 @@ class Extractor {
     // Descarga un media sin lanzar excepción. Retorna
     // {mediaInfo, expired}. mediaInfo es null en fallo; expired=true
     // si el fallo es por URL vencida (historial antiguo, 403 típico).
-    // Todos los logs individuales se silencian — se emite un solo
-    // resumen por chat al final (ver extractChat).
+    // Timeout duro de MEDIA_DOWNLOAD_TIMEOUT_MS — Baileys a veces se
+    // cuelga en un download y bloquea todo el worker.
     async _safeDownloadMedia(msg, jid, mediaType) {
+        let timeoutHandle;
+        const timeoutPromise = new Promise((_, reject) => {
+            timeoutHandle = setTimeout(
+                () => reject(new Error(`download timeout (${MEDIA_DOWNLOAD_TIMEOUT_MS}ms)`)),
+                MEDIA_DOWNLOAD_TIMEOUT_MS
+            );
+        });
         try {
-            const mediaInfo = await this.downloadMedia(msg, jid, mediaType);
+            const mediaInfo = await Promise.race([
+                this.downloadMedia(msg, jid, mediaType),
+                timeoutPromise,
+            ]);
+            clearTimeout(timeoutHandle);
             return { mediaInfo, expired: false };
         } catch (error) {
+            clearTimeout(timeoutHandle);
             const message = String(error?.message || '').toLowerCase();
             const isRateLimit =
                 message.includes('429') ||
@@ -298,6 +319,7 @@ class Extractor {
                 await sleep(60000);
                 return { mediaInfo: null, expired: false };
             }
+            const isTimeout = message.includes('timeout');
             // 403 / URL expirada / reupload fallido: silencio, cuenta como expirado.
             const isExpired =
                 message.includes('403') ||
@@ -305,7 +327,7 @@ class Extractor {
                 message.includes('expired') ||
                 message.includes('updatemediamessage') ||
                 message.includes('reupload');
-            return { mediaInfo: null, expired: isExpired };
+            return { mediaInfo: null, expired: isExpired, timeout: isTimeout };
         }
     }
 
