@@ -300,14 +300,19 @@ class Extractor {
                         `     [${itemNum}/${total}] ✗ ${item.type} · ${label} · ${dur}`
                     );
 
-                    // Circuit breaker: N timeouts consecutivos = teléfono
-                    // suspendido o red caída. Abortar batch del chat actual.
+                    // Circuit breaker: N timeouts consecutivos. Posibles causas:
+                    //   1. Archivos viejos ya no disponibles en el CDN de WhatsApp
+                    //      (común en chats antiguos — el server responde con
+                    //      silencio en vez de 403 explícito).
+                    //   2. Teléfono del cliente suspendido / pantalla bloqueada.
+                    //   3. Red inestable.
+                    // Cualquiera sea la causa, no sirve seguir intentando.
                     if (consecutiveTimeouts >= ABORT_AFTER_CONSECUTIVE_TIMEOUTS && !aborted) {
                         aborted = true;
                         const remaining = Math.max(0, queue.length - cursor);
                         logger.warn(
                             `     ⚠️  ${ABORT_AFTER_CONSECUTIVE_TIMEOUTS} timeouts consecutivos — ` +
-                            `probable teléfono suspendido o red caída.`
+                            `media no disponible (archivos viejos expirados del CDN o teléfono sin responder).`
                         );
                         logger.warn(
                             `     ⏭️  Saltando ${remaining} media restantes de este chat ` +
