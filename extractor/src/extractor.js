@@ -17,10 +17,19 @@ const logger = createLogger('extractor');
 
 const MEDIA_TYPES = new Set(['audio', 'image', 'video', 'document']);
 const MEDIA_CONCURRENCY = parseInt(process.env.MEDIA_CONCURRENCY || '5', 10);
-// Timeout duro por media. Si Baileys se cuelga en un download (pasa
-// ocasionalmente con media raro o red inestable), no esperamos más que
-// esto — cuenta como fallo y seguimos.
-const MEDIA_DOWNLOAD_TIMEOUT_MS = parseInt(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS || '30000', 10);
+// Timeout duro por media. Un media normal baja en <1s; 15s es generoso.
+// Si Baileys se cuelga (teléfono suspendido, red inestable, media raro),
+// no esperamos más que esto — cuenta como fallo y seguimos.
+const MEDIA_DOWNLOAD_TIMEOUT_MS = parseInt(process.env.MEDIA_DOWNLOAD_TIMEOUT_MS || '15000', 10);
+
+// Circuit breaker: si N media consecutivos dan timeout, asumimos que el
+// teléfono se suspendió o la red cayó. Abortamos el batch del chat actual
+// (los restantes quedan marcados como fallidos sin intentar) y saltamos
+// al siguiente chat. Así evitamos perder N × TIMEOUT segundos por cada
+// chat grande cuando el teléfono está muerto.
+const ABORT_AFTER_CONSECUTIVE_TIMEOUTS = parseInt(
+    process.env.ABORT_AFTER_CONSECUTIVE_TIMEOUTS || '5', 10
+);
 
 function formatBytes(bytes) {
     if (!bytes || bytes <= 0) return '0B';
@@ -190,15 +199,20 @@ class Extractor {
             if (this.skipMedia) {
                 logger.info(`  ⏭️  Saltando descarga de ${mediaQueue.length} media (--skip-media)`);
             } else if (mediaQueue.length > 0) {
-                const { ok, failed, expired } = await this._downloadMediaBatch(mediaQueue, convId, jid);
-                // Resumen UNA línea con conteo de expirados (lo más típico
-                // al resincronizar historial antiguo de WhatsApp).
-                const expiredPart = expired > 0
-                    ? ` (${expired} expirados)`
-                    : failed > 0 ? ` (${failed} fallidos)` : '';
+                const { ok, failed, expired, timeouts, aborted } =
+                    await this._downloadMediaBatch(mediaQueue, convId, jid);
+                // Resumen UNA línea con detalle de por qué fallaron.
+                const parts = [];
+                if (expired > 0) parts.push(`${expired} expirados`);
+                if (timeouts > 0) parts.push(`${timeouts} timeouts`);
+                if (failed > expired + timeouts) {
+                    parts.push(`${failed - expired - timeouts} otros`);
+                }
+                const details = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+                const abortSuffix = aborted ? ' · ABORTADO (circuit breaker)' : '';
                 logger.info(
                     `  ✅ ${chatName}: ${processedMessages.length} msgs, ` +
-                    `media ${ok}/${mediaQueue.length}${expiredPart}`
+                    `media ${ok}/${mediaQueue.length}${details}${abortSuffix}`
                 );
                 // Si el grueso de la media está expirada, explicarlo en UNA
                 // línea. Ayuda a entender que no es un bug, es historial viejo.
@@ -231,10 +245,13 @@ class Extractor {
         let cursor = 0;
         let ok = 0;
         let failed = 0;
-        let expired = 0;  // 403 / URL vencida — típico de historial antiguo
+        let expired = 0;          // 403 / URL vencida — típico de historial antiguo
+        let timeouts = 0;         // timeouts contabilizados
+        let consecutiveTimeouts = 0;  // SHARED entre workers — circuit breaker
+        let aborted = false;      // flag de aborto (leído por workers)
 
         const worker = async () => {
-            while (cursor < queue.length) {
+            while (cursor < queue.length && !aborted) {
                 const idx = cursor++;
                 const item = queue[idx];
                 const itemNum = idx + 1;
@@ -245,6 +262,8 @@ class Extractor {
                 const dur = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 
                 if (result && result.mediaInfo) {
+                    // Éxito — resetea contador de timeouts consecutivos
+                    consecutiveTimeouts = 0;
                     try {
                         await this.db.updateMessageMedia(convId, item.messageId, result.mediaInfo);
                         ok++;
@@ -264,6 +283,14 @@ class Extractor {
                     const wasExpired = !!(result && result.expired);
                     const wasTimeout = !!(result && result.timeout);
                     if (wasExpired) expired++;
+                    if (wasTimeout) {
+                        timeouts++;
+                        consecutiveTimeouts++;
+                    } else {
+                        // 403/expirado no cuenta para circuit breaker (es estado
+                        // estable, no indica que el teléfono esté muerto).
+                        consecutiveTimeouts = 0;
+                    }
                     const label = wasTimeout
                         ? `timeout (${Math.round(MEDIA_DOWNLOAD_TIMEOUT_MS / 1000)}s)`
                         : wasExpired
@@ -272,6 +299,22 @@ class Extractor {
                     logger.info(
                         `     [${itemNum}/${total}] ✗ ${item.type} · ${label} · ${dur}`
                     );
+
+                    // Circuit breaker: N timeouts consecutivos = teléfono
+                    // suspendido o red caída. Abortar batch del chat actual.
+                    if (consecutiveTimeouts >= ABORT_AFTER_CONSECUTIVE_TIMEOUTS && !aborted) {
+                        aborted = true;
+                        const remaining = Math.max(0, queue.length - cursor);
+                        logger.warn(
+                            `     ⚠️  ${ABORT_AFTER_CONSECUTIVE_TIMEOUTS} timeouts consecutivos — ` +
+                            `probable teléfono suspendido o red caída.`
+                        );
+                        logger.warn(
+                            `     ⏭️  Saltando ${remaining} media restantes de este chat ` +
+                            `y pasando al siguiente.`
+                        );
+                        failed += remaining;  // contamos los saltados como fallidos
+                    }
                 }
             }
         };
@@ -280,7 +323,7 @@ class Extractor {
             Array.from({ length: MEDIA_CONCURRENCY }, () => worker())
         );
 
-        return { ok, failed, expired };
+        return { ok, failed, expired, timeouts, aborted };
     }
 
     // Descarga un media sin lanzar excepción. Retorna
