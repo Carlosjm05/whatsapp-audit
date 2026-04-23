@@ -164,7 +164,15 @@ services:
       context: ./analyzer
       dockerfile: Dockerfile
     container_name: wa_analyzer
-    restart: unless-stopped
+    # Protección contra auto-arranque: SIN `--profile analysis` queda apagado.
+    # `docker compose up -d` (sin args) NO lo levanta. Para activarlo:
+    #   docker compose --profile analysis up -d analyzer
+    # Para apagarlo:
+    #   docker compose stop analyzer
+    # Para volver a la modalidad "siempre arriba", borrá `profiles` y
+    # cambiá `restart: "no"` a `restart: unless-stopped`.
+    profiles: ["analysis"]
+    restart: "no"
     environment:
       - PYTHONUNBUFFERED=1
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:?error - ANTHROPIC_API_KEY is required}

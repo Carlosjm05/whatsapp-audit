@@ -118,7 +118,7 @@ export default function OverviewPage() {
               value={formatNumber(data.failed_count ?? 0)}
               sub="Requieren reintento"
               icon={<AlertTriangle className="w-5 h-5" />}
-              tone={(data.failed_count ?? 0) > 0 ? 'negative' : undefined}
+              tone={(data.failed_count ?? 0) > 0 ? 'danger' : undefined}
             />
             <KpiCard
               label="Sin datos"
