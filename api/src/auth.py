@@ -17,10 +17,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
+import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel
 
 from .config import get_settings
@@ -34,7 +34,15 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # tokenUrl es informativo; aceptamos bodies JSON, no form-urlencoded.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt directo en vez de passlib porque passlib 1.7.4 rompe con bcrypt 4.x
+# (AttributeError: module 'bcrypt' has no attribute '__about__').
+# Limit duro de bcrypt: 72 bytes — truncamos defensivamente con el mismo
+# criterio que passlib usaba (los chars >72 son ignorados igual).
+_BCRYPT_MAX = 72
+
+
+def _truncate(plain: str) -> bytes:
+    return plain.encode("utf-8")[:_BCRYPT_MAX]
 
 
 class LoginRequest(BaseModel):
@@ -50,12 +58,12 @@ class TokenResponse(BaseModel):
 
 
 def hash_password(plain: str) -> str:
-    return pwd_context.hash(plain)
+    return bcrypt.hashpw(_truncate(plain), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     try:
-        return pwd_context.verify(plain, hashed)
+        return bcrypt.checkpw(_truncate(plain), hashed.encode("utf-8"))
     except Exception:
         return False
 
