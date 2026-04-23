@@ -244,10 +244,12 @@ def get_retry_count(lead_id: str) -> int:
 # ─── HISTORIAL DE ANÁLISIS (lead_analysis_history) ────────────
 # El API `/api/leads/{id}/reanalyze` crea una fila 'pending' en esta
 # tabla; el analyzer la promociona a 'processing' al empezar y a
-# 'completed'/'failed' al terminar. Si no hay fila pendiente (caso
-# corrida automática sin reanalyze manual), no hace nada.
+# 'completed'/'failed' al terminar. Si NO hay fila pendiente (caso
+# corrida automática del daemon), `mark_history_processing` la crea
+# en estado 'processing' para garantizar que el costo y resultado
+# queden trackeados aunque el análisis no se haya pedido manualmente.
 
-def mark_history_processing(lead_id: str) -> None:
+def mark_history_processing(lead_id: str, triggered_by: str = "auto") -> None:
     with cursor() as cur:
         cur.execute(
             """UPDATE lead_analysis_history
@@ -257,9 +259,20 @@ def mark_history_processing(lead_id: str) -> None:
                   WHERE lead_id=%s AND status='pending'
                   ORDER BY started_at ASC
                   LIMIT 1
-               )""",
+               )
+               RETURNING id""",
             (lead_id,),
         )
+        if cur.rowcount == 0:
+            # No había fila pending → crear una directamente como 'processing'.
+            # Esto pasa cuando el analyzer corre solo (daemon o batch CLI) sin
+            # que el dashboard haya marcado el lead para reanálisis primero.
+            cur.execute(
+                """INSERT INTO lead_analysis_history
+                     (lead_id, triggered_by, status, started_at)
+                   VALUES (%s, %s, 'processing', NOW())""",
+                (lead_id, triggered_by),
+            )
 
 
 def mark_history_completed(lead_id: str, model_used: str,

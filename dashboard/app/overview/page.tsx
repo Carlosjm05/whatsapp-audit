@@ -21,7 +21,10 @@ import {
   Sparkles,
   PiggyBank,
   TrendingUp,
-  UserCheck
+  UserCheck,
+  CheckCircle2,
+  Clock,
+  AlertTriangle,
 } from 'lucide-react';
 
 export default function OverviewPage() {
@@ -68,15 +71,18 @@ export default function OverviewPage() {
         const statusDist = safeArray<StatusBucket>(data.status_distribution);
         const monthly = safeArray<MonthlyVolume>(data.monthly_volume);
         return <>
+          {/* Bloque 1: VOLUMEN — chats extraídos vs leads identificados */}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             <KpiCard
-              label="Conversaciones analizadas"
+              label="Chats extraídos"
               value={formatNumber(data.total_conversations ?? 0)}
+              sub="Conversaciones traídas de WhatsApp"
               icon={<MessageSquare className="w-5 h-5" />}
             />
             <KpiCard
               label="Leads identificados"
               value={formatNumber(data.total_leads ?? 0)}
+              sub="Chats convertidos en oportunidad"
               icon={<Users className="w-5 h-5" />}
               tone="positive"
             />
@@ -87,9 +93,47 @@ export default function OverviewPage() {
               icon={<TrendingUp className="w-5 h-5" />}
               tone="warning"
             />
+          </div>
+
+          {/* Bloque 2: ESTADO DEL ANÁLISIS IA */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+            <KpiCard
+              label="Analizados por IA"
+              value={formatNumber(data.analyzed_count ?? 0)}
+              sub={data.total_leads
+                ? `${Math.round(((data.analyzed_count ?? 0) / data.total_leads) * 100)}% del total`
+                : '—'}
+              icon={<CheckCircle2 className="w-5 h-5" />}
+              tone="positive"
+            />
+            <KpiCard
+              label="Pendientes de análisis"
+              value={formatNumber(data.pending_count ?? 0)}
+              sub="En cola para Claude"
+              icon={<Clock className="w-5 h-5" />}
+              tone={(data.pending_count ?? 0) > 0 ? 'warning' : undefined}
+            />
+            <KpiCard
+              label="Fallidos"
+              value={formatNumber(data.failed_count ?? 0)}
+              sub="Requieren reintento"
+              icon={<AlertTriangle className="w-5 h-5" />}
+              tone={(data.failed_count ?? 0) > 0 ? 'negative' : undefined}
+            />
+            <KpiCard
+              label="Sin datos"
+              value={formatNumber(data.insufficient_count ?? 0)}
+              sub="Chats muy cortos"
+              icon={<MessageSquare className="w-5 h-5" />}
+            />
+          </div>
+
+          {/* Bloque 3: VALOR + CALIDAD */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
             <KpiCard
               label="Valor estimado recuperable"
               value={formatCOP(data.total_recoverable_estimated_value ?? 0)}
+              sub="Suma de presupuestos de leads recuperables"
               icon={<PiggyBank className="w-5 h-5" />}
               tone="positive"
             />

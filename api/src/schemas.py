@@ -27,6 +27,14 @@ class OverviewResponse(BaseModel):
     total_recoverable_estimated_value: int
     avg_intent_score: Optional[float] = None
     avg_advisor_score: Optional[float] = None
+    # Estado del análisis IA por lead (agregado 2026-04-23 — el panel
+    # confundía total_leads con "analizados" cuando en realidad son
+    # leads creados, muchos de ellos pending).
+    analyzed_count: int = 0
+    pending_count: int = 0
+    processing_count: int = 0
+    failed_count: int = 0
+    insufficient_count: int = 0
 
 
 class PagedRecoverableLeads(BaseModel):

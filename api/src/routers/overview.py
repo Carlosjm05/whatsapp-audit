@@ -81,6 +81,19 @@ def get_overview(_user: str = Depends(get_current_user)) -> OverviewResponse:
     avg_intent_row = fetch_one("SELECT AVG(intent_score)::float AS v FROM lead_intent WHERE intent_score IS NOT NULL")
     avg_advisor_row = fetch_one("SELECT AVG(overall_score)::float AS v FROM advisor_scores WHERE overall_score IS NOT NULL")
 
+    # Estado del análisis IA (cuántos leads ya pasaron por Claude vs pendientes).
+    analysis_status_row = fetch_one(
+        """
+        SELECT
+          COUNT(*) FILTER (WHERE analysis_status = 'completed')::int          AS analyzed,
+          COUNT(*) FILTER (WHERE analysis_status = 'pending')::int            AS pending,
+          COUNT(*) FILTER (WHERE analysis_status = 'processing')::int         AS processing,
+          COUNT(*) FILTER (WHERE analysis_status = 'failed')::int             AS failed,
+          COUNT(*) FILTER (WHERE analysis_status = 'insufficient_data')::int  AS insufficient
+          FROM leads
+        """
+    ) or {}
+
     return OverviewResponse(
         total_conversations=total_conversations,
         total_leads=total_leads,
@@ -91,4 +104,9 @@ def get_overview(_user: str = Depends(get_current_user)) -> OverviewResponse:
         total_recoverable_estimated_value=total_recoverable_estimated_value,
         avg_intent_score=(avg_intent_row["v"] if avg_intent_row else None),
         avg_advisor_score=(avg_advisor_row["v"] if avg_advisor_row else None),
+        analyzed_count=int(analysis_status_row.get("analyzed") or 0),
+        pending_count=int(analysis_status_row.get("pending") or 0),
+        processing_count=int(analysis_status_row.get("processing") or 0),
+        failed_count=int(analysis_status_row.get("failed") or 0),
+        insufficient_count=int(analysis_status_row.get("insufficient") or 0),
     )

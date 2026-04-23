@@ -105,6 +105,12 @@ export interface OverviewResponse {
   total_recoverable_estimated_value: number;
   avg_intent_score: number | null;
   avg_advisor_score: number | null;
+  // Estado del análisis IA por lead.
+  analyzed_count: number;
+  pending_count: number;
+  processing_count: number;
+  failed_count: number;
+  insufficient_count: number;
 }
 
 // Shape real que devuelve /api/leads/recoverable. Snake_case porque el

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -19,44 +19,175 @@ import {
   Settings,
   Ghost,
   Smartphone,
+  ChevronDown,
+  Sparkles,
+  Wrench,
 } from 'lucide-react';
 import StatusIndicator from './StatusIndicator';
 
-const nav = [
-  { href: '/overview', label: 'Vista general', icon: LayoutDashboard },
-  { href: '/ghosts', label: 'Leads fantasma', icon: Ghost },
-  { href: '/search', label: 'Búsqueda avanzada', icon: Search },
-  { href: '/leads', label: 'Leads recuperables', icon: Users },
-  { href: '/advisors', label: 'Desempeño de asesores', icon: UserCheck },
-  { href: '/product-intel', label: 'Inteligencia de producto', icon: Building2 },
-  { href: '/trends', label: 'Tendencias', icon: TrendingUp },
-  { href: '/errors', label: 'Diagnóstico de errores', icon: AlertTriangle },
-  { href: '/competitors', label: 'Competencia', icon: Swords },
-  { href: '/knowledge-base', label: 'Base de conocimiento', icon: BookOpen },
-  { href: '/catalogos', label: 'Catálogos', icon: Settings },
-  { href: '/conexion', label: 'Conexión WhatsApp', icon: Smartphone },
+type NavItem = {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  badge?: 'new';
+};
+
+type NavGroup = {
+  id: string;
+  title: string;
+  icon: React.ComponentType<{ className?: string }>;
+  items: NavItem[];
+};
+
+// Estructura agrupada — los títulos y orden están pensados para Óscar:
+// arriba lo que mira a diario; abajo configuración/sistema.
+const groups: NavGroup[] = [
+  {
+    id: 'principal',
+    title: 'Principal',
+    icon: LayoutDashboard,
+    items: [
+      { href: '/overview', label: 'Vista general', icon: LayoutDashboard },
+      { href: '/ghosts',   label: 'Leads fantasma', icon: Ghost },
+      { href: '/leads',    label: 'Leads recuperables', icon: Users },
+      { href: '/search',   label: 'Búsqueda avanzada', icon: Search },
+    ],
+  },
+  {
+    id: 'inteligencia',
+    title: 'Inteligencia',
+    icon: Sparkles,
+    items: [
+      { href: '/advisors',       label: 'Desempeño asesores', icon: UserCheck },
+      { href: '/product-intel',  label: 'Producto', icon: Building2 },
+      { href: '/competitors',    label: 'Competencia', icon: Swords },
+      { href: '/trends',         label: 'Tendencias', icon: TrendingUp },
+      { href: '/errors',         label: 'Errores', icon: AlertTriangle },
+      { href: '/knowledge-base', label: 'Base conocimiento', icon: BookOpen },
+    ],
+  },
+  {
+    id: 'sistema',
+    title: 'Sistema',
+    icon: Wrench,
+    items: [
+      { href: '/conexion',  label: 'Conexión WhatsApp', icon: Smartphone, badge: 'new' },
+      { href: '/catalogos', label: 'Catálogos', icon: Settings },
+    ],
+  },
 ];
 
+// Recordamos qué grupos están abiertos en localStorage para que entre
+// recargas mantenga la preferencia del usuario.
+const STORAGE_KEY = 'wa_sidebar_groups_v1';
+
+function loadOpenGroups(defaultIds: string[]): Set<string> {
+  if (typeof window === 'undefined') return new Set(defaultIds);
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return new Set(defaultIds);
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) return new Set(arr);
+  } catch { /* ignore */ }
+  return new Set(defaultIds);
+}
+
+function saveOpenGroups(open: Set<string>) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...open]));
+  } catch { /* ignore */ }
+}
+
 function NavList({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
+  // Por defecto abrimos solo el grupo que contiene la ruta actual + 'principal'.
+  const initialOpen = (() => {
+    const s = new Set<string>(['principal']);
+    for (const g of groups) {
+      if (g.items.some((it) => pathname === it.href || pathname.startsWith(it.href + '/'))) {
+        s.add(g.id);
+      }
+    }
+    return s;
+  })();
+  const [openIds, setOpenIds] = useState<Set<string>>(initialOpen);
+
+  // Hidratar desde localStorage solo en cliente para evitar hydration mismatch.
+  useEffect(() => {
+    setOpenIds(loadOpenGroups([...initialOpen]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persistir cambios de toggle.
+  useEffect(() => {
+    saveOpenGroups(openIds);
+  }, [openIds]);
+
+  const toggle = (id: string) => {
+    setOpenIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   return (
-    <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-      {nav.map((item) => {
-        const active = pathname === item.href || pathname.startsWith(item.href + '/');
-        const Icon = item.icon;
+    <nav className="flex-1 px-3 py-4 space-y-3 overflow-y-auto">
+      {groups.map((group) => {
+        const isOpen = openIds.has(group.id);
+        const GroupIcon = group.icon;
+        const hasActive = group.items.some(
+          (it) => pathname === it.href || pathname.startsWith(it.href + '/')
+        );
         return (
-          <Link
-            key={item.href}
-            href={item.href}
-            onClick={onNavigate}
-            className={`flex items-center gap-3 px-3 py-3 rounded-lg text-sm transition ${
-              active
-                ? 'bg-brand-600 text-white'
-                : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-            }`}
-          >
-            <Icon className="w-4 h-4 shrink-0" />
-            <span className="truncate">{item.label}</span>
-          </Link>
+          <div key={group.id}>
+            <button
+              onClick={() => toggle(group.id)}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[10px] font-semibold uppercase tracking-wider transition ${
+                hasActive
+                  ? 'text-slate-200'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+              aria-expanded={isOpen}
+            >
+              <GroupIcon className="w-3.5 h-3.5" />
+              <span className="flex-1 text-left">{group.title}</span>
+              <ChevronDown
+                className={`w-3.5 h-3.5 transition-transform ${
+                  isOpen ? 'rotate-0' : '-rotate-90'
+                }`}
+              />
+            </button>
+            {isOpen && (
+              <div className="mt-1 space-y-0.5">
+                {group.items.map((item) => {
+                  const active = pathname === item.href || pathname.startsWith(item.href + '/');
+                  const Icon = item.icon;
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      onClick={onNavigate}
+                      className={`flex items-center gap-3 pl-3 pr-2 py-2 rounded-lg text-sm transition ${
+                        active
+                          ? 'bg-brand-600 text-white'
+                          : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4 shrink-0" />
+                      <span className="flex-1 truncate">{item.label}</span>
+                      {item.badge === 'new' && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded font-bold bg-emerald-500 text-white">
+                          NUEVO
+                        </span>
+                      )}
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         );
       })}
     </nav>
@@ -123,7 +254,7 @@ export default function Sidebar() {
               <StatusIndicator />
             </div>
             <div className="px-6 py-3 border-t border-slate-800 text-xs text-slate-500">
-              v1.2 · Uso interno
+              v1.3 · Uso interno
             </div>
           </aside>
         </div>
@@ -137,7 +268,7 @@ export default function Sidebar() {
           <StatusIndicator />
         </div>
         <div className="px-6 py-3 border-t border-slate-800 text-xs text-slate-500">
-          v1.2 · Uso interno
+          v1.3 · Uso interno
         </div>
       </aside>
     </>
