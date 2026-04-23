@@ -4,11 +4,40 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from ..auth import get_current_user
 from ..db import fetch_all, fetch_one, execute
 from ..schemas import LeadDetail, PagedRecoverableLeads
+
+
+# Estados válidos del override manual (mismos que final_status del análisis IA).
+_VALID_FINAL_STATUSES = {
+    'venta_cerrada', 'visita_agendada', 'negociacion_activa',
+    'seguimiento_activo', 'se_enfrio', 'ghosteado_por_asesor',
+    'ghosteado_por_lead', 'descalificado', 'nunca_calificado',
+    'spam', 'numero_equivocado', 'datos_insuficientes',
+}
+
+
+class ManualOverrideRequest(BaseModel):
+    """Override manual del operador sobre el análisis IA.
+
+    Permite a Óscar (o vos) corregir cuando la IA se equivocó:
+      - "ya pagó esta persona" → manual_status='venta_cerrada'
+      - "este nunca va a comprar" → manual_status='descalificado',
+                                   manual_is_recoverable=False
+      - "este SÍ es recuperable aunque la IA dijo que no" →
+                                   manual_is_recoverable=True
+
+    Campos opcionales — solo se actualiza lo que mandes. Para borrar el
+    override, manda manual_status=null + manual_is_recoverable=null.
+    """
+    manual_status: Optional[str] = Field(None, description="Override del final_status")
+    manual_is_recoverable: Optional[bool] = Field(None, description="Override de is_recoverable")
+    manual_notes: Optional[str] = Field(None, description="Nota libre del operador")
+    clear: bool = Field(False, description="Si true, BORRA todo el override")
 
 router = APIRouter(prefix="/api/leads", tags=["leads"])
 
@@ -277,7 +306,7 @@ def get_analysis_history(lead_id: str, _user: str = Depends(get_current_user)):
                cost_usd::float AS cost_usd,
                to_char(started_at   AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS started_at,
                to_char(completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS completed_at,
-               error_message, diff_summary
+               error_message, diff_summary, raw_output
           FROM lead_analysis_history
          WHERE lead_id = %s
          ORDER BY started_at DESC
@@ -286,6 +315,84 @@ def get_analysis_history(lead_id: str, _user: str = Depends(get_current_user)):
         [lead_id],
     )
     return {"items": rows}
+
+
+# ─── Override manual del análisis IA ─────────────────────────
+@router.post("/{lead_id}/override")
+def manual_override(
+    lead_id: str,
+    body: ManualOverrideRequest = Body(...),
+    user: str = Depends(get_current_user),
+):
+    """Marca/limpia el override manual del operador sobre el análisis IA.
+
+    El override TIENE PRECEDENCIA sobre los campos del análisis automático
+    en endpoints de lectura. Sirve para corregir errores de la IA sin
+    tener que re-analizar (ej: "ya pagó", "este nunca va a comprar")."""
+    lead_id = _parse_lead_id(lead_id)
+    if not fetch_one("SELECT 1 FROM leads WHERE id = %s", [lead_id]):
+        raise HTTPException(status_code=404, detail="Lead no encontrado")
+
+    # Validar status
+    if body.manual_status and body.manual_status not in _VALID_FINAL_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"manual_status inválido. Usá uno de: {sorted(_VALID_FINAL_STATUSES)}",
+        )
+
+    # Asegurar que existe la fila de outcome (puede no existir si el
+    # análisis nunca corrió). Insert mínimo si falta.
+    out = fetch_one(
+        "SELECT id FROM conversation_outcomes WHERE lead_id = %s",
+        [lead_id],
+    )
+    if not out:
+        execute(
+            """INSERT INTO conversation_outcomes (lead_id, final_status)
+                 VALUES (%s, 'datos_insuficientes')""",
+            [lead_id],
+        )
+
+    if body.clear:
+        execute(
+            """UPDATE conversation_outcomes
+                  SET manual_status = NULL,
+                      manual_is_recoverable = NULL,
+                      manual_notes = NULL,
+                      manual_overridden_by = NULL,
+                      manual_overridden_at = NULL
+                WHERE lead_id = %s""",
+            [lead_id],
+        )
+        return {"ok": True, "cleared": True}
+
+    execute(
+        """UPDATE conversation_outcomes
+              SET manual_status = COALESCE(%s, manual_status),
+                  manual_is_recoverable = COALESCE(%s, manual_is_recoverable),
+                  manual_notes = COALESCE(%s, manual_notes),
+                  manual_overridden_by = %s,
+                  manual_overridden_at = NOW()
+            WHERE lead_id = %s""",
+        [
+            body.manual_status,
+            body.manual_is_recoverable,
+            body.manual_notes,
+            user,
+            lead_id,
+        ],
+    )
+
+    row = fetch_one(
+        """SELECT manual_status, manual_is_recoverable, manual_notes,
+                  manual_overridden_by,
+                  to_char(manual_overridden_at AT TIME ZONE 'UTC',
+                          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS manual_overridden_at
+             FROM conversation_outcomes
+            WHERE lead_id = %s""",
+        [lead_id],
+    )
+    return {"ok": True, "override": row}
 
 
 @router.get("/search")

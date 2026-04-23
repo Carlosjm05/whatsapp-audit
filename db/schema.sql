@@ -458,3 +458,80 @@ CREATE TABLE advisors_catalog (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_advisors_catalog_active ON advisors_catalog(is_active);
+
+-- ─────────────────────────────────────────────
+-- TABLA: admin_users
+-- Multi-usuario para el dashboard. ADMIN_USER/ADMIN_PASSWORD del .env
+-- siguen funcionando como fallback (un único super-admin baked-in).
+-- Esta tabla agrega usuarios extra (operadores, viewers).
+-- ─────────────────────────────────────────────
+CREATE TABLE admin_users (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    username        VARCHAR(64) NOT NULL UNIQUE,
+    password_hash   VARCHAR(255) NOT NULL,            -- bcrypt
+    full_name       VARCHAR(150),
+    role            VARCHAR(32) NOT NULL DEFAULT 'operator'
+                    CHECK (role IN ('admin', 'operator', 'viewer')),
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    last_login_at   TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_admin_users_username ON admin_users(LOWER(username));
+CREATE INDEX idx_admin_users_active   ON admin_users(is_active);
+
+CREATE OR REPLACE FUNCTION touch_admin_users_updated_at() RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_admin_users_touch
+    BEFORE UPDATE ON admin_users
+    FOR EACH ROW EXECUTE FUNCTION touch_admin_users_updated_at();
+
+-- ─────────────────────────────────────────────
+-- TABLA: qr_share_tokens
+-- Links públicos temporales para que el cliente escanee el QR sin
+-- loguearse. Single-use, expiran a los 10 min, se invalidan al
+-- escanearse el QR exitosamente.
+-- ─────────────────────────────────────────────
+CREATE TABLE qr_share_tokens (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    token           VARCHAR(64) NOT NULL UNIQUE,      -- random URL-safe (≥32 chars)
+    created_by      VARCHAR(64) NOT NULL,             -- username del admin que lo generó
+    note            VARCHAR(255),                      -- ej. "Para Oscar - 23 abr"
+    expires_at      TIMESTAMPTZ NOT NULL,
+    used_at         TIMESTAMPTZ,                      -- cuando se escaneó/usó
+    revoked_at      TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_qr_tokens_token   ON qr_share_tokens(token);
+CREATE INDEX idx_qr_tokens_expires ON qr_share_tokens(expires_at);
+
+-- ─────────────────────────────────────────────
+-- ALTER conversation_outcomes — manual override del análisis IA.
+-- Si el operador marca manual_status, este TIENE PRECEDENCIA sobre
+-- final_status en lecturas/UI. Permite corregir análisis equivocados
+-- (ej. "ya pagó" detectado como lead activo).
+-- ─────────────────────────────────────────────
+ALTER TABLE conversation_outcomes
+    ADD COLUMN IF NOT EXISTS manual_status        VARCHAR(30),
+    ADD COLUMN IF NOT EXISTS manual_is_recoverable BOOLEAN,
+    ADD COLUMN IF NOT EXISTS manual_notes         TEXT,
+    ADD COLUMN IF NOT EXISTS manual_overridden_by VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS manual_overridden_at TIMESTAMPTZ;
+
+ALTER TABLE conversation_outcomes
+    ADD CONSTRAINT conversation_outcomes_manual_status_check
+    CHECK (manual_status IS NULL OR manual_status IN (
+        'venta_cerrada','visita_agendada','negociacion_activa',
+        'seguimiento_activo','se_enfrio','ghosteado_por_asesor',
+        'ghosteado_por_lead','descalificado','nunca_calificado',
+        'spam','numero_equivocado','datos_insuficientes'
+    ));
+
+CREATE INDEX idx_outcomes_manual_status
+    ON conversation_outcomes(manual_status)
+    WHERE manual_status IS NOT NULL;

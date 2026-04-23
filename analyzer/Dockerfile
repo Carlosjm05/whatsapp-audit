@@ -17,4 +17,4 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 RUN chown -R appuser:appuser /app
 USER appuser
 
-CMD ["python", "-m", "src.main", "--mode=analyze"]
+CMD ["python", "-m", "src.main", "--mode=daemon"]

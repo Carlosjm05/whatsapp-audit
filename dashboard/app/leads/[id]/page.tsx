@@ -7,6 +7,8 @@ import { fetchApi, safeArray } from '@/lib/api';
 import type { LeadDetail } from '@/types/api';
 import PageHeader from '@/components/PageHeader';
 import { ErrorState } from '@/components/LoadingState';
+import ManualOverridePanel from '@/components/ManualOverridePanel';
+import AnalysisHistoryPanel from '@/components/AnalysisHistoryPanel';
 import { formatCOP, formatDate, formatDateTime } from '@/lib/format';
 import {
   ArrowLeft,
@@ -108,6 +110,8 @@ export default function LeadDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [reanalyzing, setReanalyzing] = useState(false);
   const [reanalyzeToast, setReanalyzeToast] = useState<string | null>(null);
+  // Bumpea para forzar refetch del lead y del historial cuando hay cambios.
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     if (!id) return;
@@ -125,14 +129,18 @@ export default function LeadDetailPage() {
     return () => {
       active = false;
     };
-  }, [id]);
+  }, [id, refreshKey]);
 
   async function onReanalyze() {
     setReanalyzing(true);
     setReanalyzeToast(null);
     try {
       await fetchApi(`/api/leads/${id}/reanalyze`, { method: 'POST' });
-      setReanalyzeToast('Lead encolado para re-análisis. Resultados en aprox. 1 minuto.');
+      setReanalyzeToast(
+        '✓ Encolado. El daemon lo toma en 30 s; refrescá esta página en 1-2 min para ver el resultado nuevo.'
+      );
+      // Bump de refreshKey para que el panel de historial muestre la nueva entrada 'pending'.
+      setTimeout(() => setRefreshKey((k) => k + 1), 1000);
     } catch (err) {
       setReanalyzeToast(
         'Error: ' + (err instanceof Error ? err.message : 'No se pudo encolar')
@@ -793,6 +801,22 @@ export default function LeadDetailPage() {
           </Section>
         </div>
       )}
+
+      {/* Override manual + historial de análisis */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+        <ManualOverridePanel
+          leadId={id}
+          initialStatus={(outcome.manual_status as string | null) || null}
+          initialIsRecoverable={(outcome.manual_is_recoverable as boolean | null) ?? null}
+          initialNotes={(outcome.manual_notes as string | null) || null}
+          overriddenBy={(outcome.manual_overridden_by as string | null) || null}
+          overriddenAt={(outcome.manual_overridden_at as string | null) || null}
+          iaStatus={(outcome.final_status as string | null) || null}
+          iaIsRecoverable={(outcome.is_recoverable as boolean | null) ?? null}
+          onSaved={() => setRefreshKey((k) => k + 1)}
+        />
+        <AnalysisHistoryPanel leadId={id} refreshKey={refreshKey} />
+      </div>
     </div>
   );
 }

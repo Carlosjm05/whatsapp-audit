@@ -18,12 +18,15 @@ from .routers import (
     advisors,
     catalogs,
     competitors,
+    cost as cost_router,
     errors as errors_router,
     export,
     knowledge_base,
     leads,
     overview,
     product_intel,
+    qr as qr_router,
+    system as system_router,
     trends,
 )
 from .schemas import HealthResponse
@@ -88,6 +91,9 @@ app.include_router(knowledge_base.router)
 app.include_router(export.router)
 app.include_router(trends.router)
 app.include_router(catalogs.router)
+app.include_router(qr_router.router)
+app.include_router(system_router.router)
+app.include_router(cost_router.router)
 
 
 # --- Health ---

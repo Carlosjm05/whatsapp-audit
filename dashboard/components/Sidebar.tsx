@@ -18,7 +18,9 @@ import {
   X,
   Settings,
   Ghost,
+  Smartphone,
 } from 'lucide-react';
+import StatusIndicator from './StatusIndicator';
 
 const nav = [
   { href: '/overview', label: 'Vista general', icon: LayoutDashboard },
@@ -32,6 +34,7 @@ const nav = [
   { href: '/competitors', label: 'Competencia', icon: Swords },
   { href: '/knowledge-base', label: 'Base de conocimiento', icon: BookOpen },
   { href: '/catalogos', label: 'Catálogos', icon: Settings },
+  { href: '/conexion', label: 'Conexión WhatsApp', icon: Smartphone },
 ];
 
 function NavList({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
@@ -116,8 +119,11 @@ export default function Sidebar() {
               </button>
             </div>
             <NavList pathname={pathname} onNavigate={() => setMobileOpen(false)} />
-            <div className="px-6 py-4 border-t border-slate-800 text-xs text-slate-500">
-              v1.1 · Uso interno
+            <div className="px-3 py-3 border-t border-slate-800">
+              <StatusIndicator />
+            </div>
+            <div className="px-6 py-3 border-t border-slate-800 text-xs text-slate-500">
+              v1.2 · Uso interno
             </div>
           </aside>
         </div>
@@ -127,8 +133,11 @@ export default function Sidebar() {
       <aside className="hidden md:flex w-64 shrink-0 bg-slate-900 text-slate-100 flex-col">
         <Brand />
         <NavList pathname={pathname} />
-        <div className="px-6 py-4 border-t border-slate-800 text-xs text-slate-500">
-          v1.1 · Uso interno
+        <div className="px-3 py-3 border-t border-slate-800">
+          <StatusIndicator />
+        </div>
+        <div className="px-6 py-3 border-t border-slate-800 text-xs text-slate-500">
+          v1.2 · Uso interno
         </div>
       </aside>
     </>

@@ -80,9 +80,11 @@ def fetch_one(sql: str, params: Optional[Sequence[Any]] = None) -> Optional[Dict
         return dict(row) if row else None
 
 
-def execute(sql: str, params: Optional[Sequence[Any]] = None) -> None:
+def execute(sql: str, params: Optional[Sequence[Any]] = None) -> int:
+    """Ejecuta un INSERT/UPDATE/DELETE. Devuelve filas afectadas."""
     with get_cursor() as cur:
         cur.execute(sql, params or ())
+        return cur.rowcount or 0
 
 
 def ping() -> bool:

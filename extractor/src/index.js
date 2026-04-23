@@ -8,6 +8,7 @@ const { createLogger } = require('./logger');
 const { Database } = require('./database');
 const { Extractor } = require('./extractor');
 const { sleep, parseArgs, randomBetween } = require('./utils');
+const statusPub = require('./status-publisher');
 
 // Baileys — manejar ambos estilos de export (default vs named)
 const baileys = require('@whiskeysockets/baileys');
@@ -121,11 +122,15 @@ function waitForConnectionOutcome(socket) {
                 logger.info('═══════════════════════════════════════════');
                 qrcode.generate(qr, { small: true });
                 logger.info('Abre WhatsApp > Dispositivos vinculados > Vincular dispositivo');
+                logger.info('💡 También disponible en el dashboard: /conexion');
                 logger.info('═══════════════════════════════════════════');
+                // Publicar a Redis para que el dashboard lo muestre.
+                statusPub.publishQR(qr).catch(() => {});
             }
 
             if (connection === 'connecting') {
                 logger.info('🔌 connection: connecting...');
+                statusPub.setStatus('connecting').catch(() => {});
             }
 
             if (isNewLogin) {
@@ -140,6 +145,8 @@ function waitForConnectionOutcome(socket) {
                 logger.info('═══════════════════════════════════════════');
                 logger.info('✅ WHATSAPP CONECTADO — Baileys');
                 logger.info('═══════════════════════════════════════════');
+                statusPub.setStatus('connected').catch(() => {});
+                statusPub.notifyConnected().catch(() => {});
                 done('open');
             }
 
@@ -150,6 +157,10 @@ function waitForConnectionOutcome(socket) {
                 if (lastDisconnect?.error?.message) {
                     logger.warn(`   mensaje: ${lastDisconnect.error.message}`);
                 }
+
+                statusPub.setStatus(
+                    statusCode === DisconnectReason.loggedOut ? 'disconnected' : 'reconnecting'
+                ).catch(() => {});
 
                 if (statusCode === DisconnectReason.loggedOut) done('loggedout');
                 else if (statusCode === DisconnectReason.restartRequired) done('restart');
@@ -494,6 +505,20 @@ async function runExtractMode(options = {}) {
                         `${pct.toFixed(1)}% · ETA ${formatETA(etaSec)}`
                     );
                 }
+
+                // Publicar stats al dashboard (cada chat — el costo es trivial).
+                statusPub.publishStats({
+                    ok: successCount,
+                    fallidos: failCount,
+                    procesados: processed,
+                    total: targetChats.length,
+                    actual: chat.name,
+                    porcentaje: ((i + 1) / targetChats.length) * 100,
+                    eta_seg: processed > 0
+                        ? Math.round(((targetChats.length - (i + 1)) * (Date.now() - runStartedAt) / 1000) / processed)
+                        : null,
+                }).catch(() => {});
+                statusPub.heartbeat().catch(() => {});
 
                 // Persistir progreso en DB cada 100 chats procesados para
                 // que Óscar pueda consultar % desde otra terminal sin

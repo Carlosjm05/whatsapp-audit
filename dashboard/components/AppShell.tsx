@@ -6,14 +6,23 @@ import Sidebar from './Sidebar';
 import Header from './Header';
 import { getToken } from '@/lib/auth';
 
+// Rutas públicas (sin login). /escanear/[token] es para que el cliente
+// pueda escanear el QR vía link temporal sin tener cuenta en el panel.
+function isPublicPath(pathname: string): boolean {
+  return (
+    pathname.startsWith('/login') ||
+    pathname.startsWith('/escanear')
+  );
+}
+
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() || '/';
   const router = useRouter();
   const [ready, setReady] = useState(false);
-  const isLogin = pathname.startsWith('/login');
+  const isPublic = isPublicPath(pathname);
 
   useEffect(() => {
-    if (isLogin) {
+    if (isPublic) {
       setReady(true);
       return;
     }
@@ -23,9 +32,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       return;
     }
     setReady(true);
-  }, [pathname, isLogin, router]);
+  }, [pathname, isPublic, router]);
 
-  if (isLogin) {
+  // Páginas públicas: render limpio sin sidebar/header.
+  if (isPublic) {
     return <>{children}</>;
   }
 
@@ -42,7 +52,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0">
         <Header />
-        <main className="flex-1 p-6 lg:p-8 overflow-x-auto">{children}</main>
+        <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-x-auto">{children}</main>
       </div>
     </div>
   );

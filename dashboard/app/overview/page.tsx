@@ -5,6 +5,7 @@ import { fetchApi, safeArray } from '@/lib/api';
 import type { OverviewResponse, FunnelStage, StatusBucket, MonthlyVolume } from '@/types/api';
 import KpiCard from '@/components/KpiCard';
 import PageHeader from '@/components/PageHeader';
+import CostWidget from '@/components/CostWidget';
 import {
   ChartCard,
   ChartBar,
@@ -104,6 +105,10 @@ export default function OverviewPage() {
               sub="Calidad ponderada de atención"
               icon={<UserCheck className="w-5 h-5" />}
             />
+          </div>
+
+          <div className="mt-4">
+            <CostWidget />
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-6">
