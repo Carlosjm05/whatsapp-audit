@@ -167,13 +167,37 @@ export default function ConexionPage() {
   };
 
   const copyToClipboard = async (text: string, key: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(key);
-      setTimeout(() => setCopied(null), 2000);
-    } catch {
-      alert('No se pudo copiar. Selecciona y copia a mano: ' + text);
+    // Intento 1: Clipboard API moderna (requiere HTTPS o localhost).
+    // Falla en Chrome/Edge cuando se accede via IP HTTP cruda.
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        setCopied(key);
+        setTimeout(() => setCopied(null), 2000);
+        return;
+      } catch { /* fall through */ }
     }
+    // Intento 2: API vieja con textarea offscreen + execCommand.
+    // Funciona en HTTP+IP donde Clipboard API está bloqueada.
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) {
+        setCopied(key);
+        setTimeout(() => setCopied(null), 2000);
+        return;
+      }
+    } catch { /* fall through */ }
+    // Si todo falla, el input ya muestra el link y se puede seleccionar a mano.
+    alert('Tu navegador bloqueó copiar automáticamente. Seleccioná el link y copialo con Ctrl+C.');
   };
 
   const status = data?.status || 'unknown';
