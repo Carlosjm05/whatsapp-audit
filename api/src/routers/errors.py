@@ -37,6 +37,9 @@ def errors_overview(_user: str = Depends(get_current_user)) -> ErrorsResponse:
         """
     )
 
+    # Tiempos de respuesta calculados con HORARIO LABORAL de Óscar
+    # (Lun-Sáb 7-19). Domingos se reportan en métrica separada `sunday_*`
+    # para no inflar los KPIs principales.
     rt_stats_row = fetch_one(
         """
         SELECT
@@ -44,7 +47,11 @@ def errors_overview(_user: str = Depends(get_current_user)) -> ErrorsResponse:
           percentile_cont(0.5) WITHIN GROUP (ORDER BY first_response_minutes)::float AS p50_first_response_minutes,
           percentile_cont(0.95) WITHIN GROUP (ORDER BY first_response_minutes)::float AS p95_first_response_minutes,
           AVG(avg_response_minutes)::float AS avg_response_minutes,
-          AVG(longest_gap_hours)::float AS avg_longest_gap_hours
+          AVG(longest_gap_hours)::float AS avg_longest_gap_hours,
+          -- Métricas de domingo (separadas, no entran al SLA).
+          AVG(NULLIF(sunday_avg_minutes, 0))::float AS sunday_avg_minutes,
+          SUM(COALESCE(sunday_response_count, 0))::int AS sunday_total_responses,
+          COUNT(*) FILTER (WHERE sunday_response_count > 0)::int AS leads_with_sunday_activity
         FROM response_times
         WHERE first_response_minutes IS NOT NULL
         """

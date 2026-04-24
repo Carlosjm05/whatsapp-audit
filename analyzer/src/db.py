@@ -514,8 +514,9 @@ def persist_analysis(
                          (lead_id, first_response_minutes, avg_response_minutes,
                           longest_gap_hours, unanswered_messages_count,
                           lead_had_to_repeat, repeat_count,
-                          advisor_active_hours, response_time_category)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                          advisor_active_hours, response_time_category,
+                          sunday_avg_minutes, sunday_response_count)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (
                         lead_id,
                         computed.get("first_response_minutes", rt.get("first_response_minutes")),
@@ -530,6 +531,8 @@ def persist_analysis(
                             RESPONSE_TIME_CATEGORIES_SET,
                             "regular",
                         ),
+                        computed.get("sunday_response_minutes_avg"),
+                        int(computed.get("sunday_response_count", 0) or 0),
                     ),
                 )
 

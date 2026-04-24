@@ -73,43 +73,70 @@ export function EmptyChart({ message = 'Sin datos' }: { message?: string }) {
   );
 }
 
+// Trunca strings largos para que no rompan el layout del chart.
+function truncateLabel(s: unknown, maxLen = 32): string {
+  const str = String(s ?? '');
+  if (str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 1).trim() + '…';
+}
+
 export function ChartBar({
   data,
   xKey,
   yKey,
   color = '#2563eb',
-  horizontal = false
+  horizontal = false,
+  yAxisWidth = 180,
 }: {
   data: ChartDataItem[];
   xKey: string;
   yKey: string;
   color?: string;
   horizontal?: boolean;
+  yAxisWidth?: number;
 }) {
   if (!data || data.length === 0) return <EmptyChart />;
+  // Para horizontal: pre-truncar los labels y filtrar nulos para evitar
+  // overlapping en chart de "errores más frecuentes".
+  const safeData = horizontal
+    ? data.map((d) => ({ ...d, [xKey]: truncateLabel(d[xKey], 38) }))
+    : data;
+
   return (
     <ResponsiveContainer>
       <BarChart
-        data={data}
+        data={safeData}
         layout={horizontal ? 'vertical' : 'horizontal'}
-        margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
+        margin={
+          horizontal
+            ? { top: 8, right: 24, left: 8, bottom: 8 }
+            : { top: 8, right: 16, left: 8, bottom: 8 }
+        }
       >
         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
         {horizontal ? (
           <>
-            <XAxis type="number" stroke="#64748b" fontSize={12} />
+            <XAxis type="number" stroke="#64748b" fontSize={12} allowDecimals={false} />
             <YAxis
               type="category"
               dataKey={xKey}
               stroke="#64748b"
-              fontSize={12}
-              width={120}
+              fontSize={11}
+              width={yAxisWidth}
+              interval={0}
+              tick={{ fill: '#475569' }}
             />
           </>
         ) : (
           <>
-            <XAxis dataKey={xKey} stroke="#64748b" fontSize={12} />
-            <YAxis stroke="#64748b" fontSize={12} />
+            <XAxis dataKey={xKey} stroke="#64748b" fontSize={12}
+              tick={{ fontSize: 11 }}
+              interval={0}
+              angle={data.length > 8 ? -25 : 0}
+              textAnchor={data.length > 8 ? 'end' : 'middle'}
+              height={data.length > 8 ? 60 : 30}
+            />
+            <YAxis stroke="#64748b" fontSize={12} allowDecimals={false} />
           </>
         )}
         <Tooltip
@@ -119,7 +146,7 @@ export function ChartBar({
             fontSize: 12
           }}
         />
-        <Bar dataKey={yKey} fill={color} radius={[4, 4, 0, 0]} />
+        <Bar dataKey={yKey} fill={color} radius={horizontal ? [0, 4, 4, 0] : [4, 4, 0, 0]} />
       </BarChart>
     </ResponsiveContainer>
   );

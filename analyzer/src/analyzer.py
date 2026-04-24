@@ -97,7 +97,13 @@ def parse_transcript(text: str) -> List[ParsedMsg]:
 
 
 def compute_metrics(text: str) -> Dict[str, Any]:
-    msgs = parse_transcript(text)
+    return compute_metrics_from_msgs(parse_transcript(text))
+
+
+def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
+    """Misma lógica que compute_metrics() pero recibe la lista ya parseada.
+    Útil para `recompute_metrics.py` que construye los msgs directamente
+    de la tabla `messages` sin pasar por unified_transcripts."""
     if not msgs:
         return {
             "total_messages": 0, "advisor_messages": 0, "lead_messages": 0,
@@ -110,9 +116,16 @@ def compute_metrics(text: str) -> Dict[str, Any]:
     last_ts = msgs[-1].ts
     conversation_days = max(1, (last_ts.date() - first_ts.date()).days + 1)
 
+    # Tiempos de respuesta calculados con HORARIO LABORAL de Óscar:
+    # Lun-Sáb 7-19. Domingos se trackean por separado para visibilidad.
+    # (Definido 2026-04-23, antes era wall-clock y daba 36h promedio
+    # porque contaba noches y fines de semana.)
+    from .business_hours import response_time_minutes
+
     first_lead_ts: Optional[datetime] = None
     first_response_minutes: Optional[float] = None
-    response_gaps: List[float] = []
+    response_gaps: List[float] = []         # solo business
+    sunday_gaps: List[float] = []           # solo domingos (separado)
     longest_gap_hours: Optional[float] = None
 
     for i, m in enumerate(msgs):
@@ -120,29 +133,35 @@ def compute_metrics(text: str) -> Dict[str, Any]:
             first_lead_ts = m.ts
         if (m.role == "ASESOR" and first_lead_ts is not None
                 and first_response_minutes is None):
-            first_response_minutes = (m.ts - first_lead_ts).total_seconds() / 60.0
+            mins, bucket = response_time_minutes(first_lead_ts, m.ts)
+            # first_response_minutes es la métrica principal — siempre
+            # usamos el cálculo business. Si fue domingo lo guardamos
+            # también en sunday_gaps para el promedio separado.
+            first_response_minutes = mins
+            if bucket == "sunday":
+                sunday_gaps.append(mins)
 
-    # Violaciones del SLA de 10 min. Excluye ventanas nocturnas (21:00-07:00)
-    # en horario local — no cuenta como error si el lead escribió a las 2am.
+    # SLA de 10 min: cualquier respuesta > 10 min en horario laboral
+    # es violación. Domingos NO cuentan para SLA (se reportan aparte).
     SLA_MIN = 10
-    NIGHT_HOURS = {21, 22, 23, 0, 1, 2, 3, 4, 5, 6}
     sla_violations: List[Dict[str, Any]] = []
     for i in range(1, len(msgs)):
         prev, cur = msgs[i-1], msgs[i]
         if prev.role == "LEAD" and cur.role == "ASESOR":
-            gap = (cur.ts - prev.ts).total_seconds() / 60.0
-            response_gaps.append(gap)
-            # Skip si el mensaje del lead llegó en horario nocturno.
-            if prev.ts.hour in NIGHT_HOURS:
-                continue
-            if gap > SLA_MIN:
+            mins, bucket = response_time_minutes(prev.ts, cur.ts)
+            if bucket == "sunday":
+                sunday_gaps.append(mins)
+                continue                    # no entra al promedio business
+            response_gaps.append(mins)
+            if mins > SLA_MIN:
                 sla_violations.append({
                     "lead_msg_at": prev.ts.strftime("%Y-%m-%d %H:%M"),
                     "advisor_msg_at": cur.ts.strftime("%Y-%m-%d %H:%M"),
-                    "gap_minutes": round(gap, 1),
+                    "gap_minutes": round(mins, 1),
                 })
 
     avg_resp = round(mean(response_gaps), 2) if response_gaps else None
+    sunday_avg = round(mean(sunday_gaps), 2) if sunday_gaps else None
 
     for i in range(1, len(msgs)):
         gap = (msgs[i].ts - msgs[i-1].ts).total_seconds() / 3600.0
@@ -189,6 +208,9 @@ def compute_metrics(text: str) -> Dict[str, Any]:
         "advisor_active_hours": active,
         "sla_violations": sla_violations,
         "sla_violations_count": len(sla_violations),
+        # Domingo (separado del SLA, solo informativo):
+        "sunday_response_minutes_avg": sunday_avg,
+        "sunday_response_count": len(sunday_gaps),
     }
 
 

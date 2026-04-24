@@ -8,7 +8,7 @@ import KpiCard from '@/components/KpiCard';
 import { ChartCard, ChartBar } from '@/components/Charts';
 import { ErrorState } from '@/components/LoadingState';
 import { formatNumber } from '@/lib/format';
-import { AlertTriangle, Clock, Flame, Users } from 'lucide-react';
+import { AlertTriangle, Clock, Flame, Users, CalendarDays, Info } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
 function toNum(v: unknown): number {
@@ -77,7 +77,17 @@ export default function ErrorsPage() {
 
       {!loading && !error && hasAnyData && (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+          {/* Banner explicativo del horario laboral */}
+          <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 mb-4 flex items-start gap-3 text-sm text-sky-900">
+            <Info className="w-4 h-4 mt-0.5 shrink-0" />
+            <div>
+              <strong>Horario de medición:</strong> los tiempos se calculan solo en horario laboral
+              <strong> (Lun–Sáb 7:00–19:00)</strong>. Mensajes recibidos fuera de ese rango no penalizan
+              al asesor. Domingos se reportan en una métrica separada abajo.
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <KpiCard
               label="1ra resp. promedio"
               value={
@@ -85,7 +95,7 @@ export default function ErrorsPage() {
                   ? `${Math.round(toNum(rt.avg_first_response_minutes))} min`
                   : '—'
               }
-              sub="Tiempo en responder primer mensaje"
+              sub="Solo horario laboral"
               icon={<Clock className="w-5 h-5" />}
             />
             <KpiCard
@@ -95,7 +105,7 @@ export default function ErrorsPage() {
                   ? `${Math.round(toNum(rt.p95_first_response_minutes))} min`
                   : '—'
               }
-              sub="95% de respuestas bajo este tiempo"
+              sub="95% bajo este tiempo"
               icon={<AlertTriangle className="w-5 h-5" />}
               tone="warning"
             />
@@ -109,16 +119,55 @@ export default function ErrorsPage() {
               tone={pctNoFollowup != null && pctNoFollowup > 30 ? 'danger' : 'warning'}
             />
             <KpiCard
-              label="Brecha máxima promedio"
+              label="Brecha máxima prom."
               value={
                 rt.avg_longest_gap_hours != null
                   ? `${toNum(rt.avg_longest_gap_hours).toFixed(1)}h`
                   : '—'
               }
-              sub="Silencio más largo en las conv."
+              sub="Silencio más largo"
               icon={<Users className="w-5 h-5" />}
             />
           </div>
+
+          {/* Card específica de domingo (separada del SLA) */}
+          {(rt.sunday_total_responses != null && toNum(rt.sunday_total_responses) > 0) && (
+            <div className="card p-5 mb-6 bg-violet-50/50 ring-1 ring-violet-200">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-lg bg-violet-100 text-violet-700 flex items-center justify-center">
+                  <CalendarDays className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-800">Actividad de domingo</h3>
+                  <p className="text-xs text-slate-600">
+                    Métrica separada — no entra al SLA, es solo para ver si el asesor atiende fuera de horario.
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-lg bg-white ring-1 ring-violet-200 p-3">
+                  <div className="text-[11px] uppercase text-slate-500 mb-1">Tiempo prom. domingo</div>
+                  <div className="text-2xl font-bold text-violet-700">
+                    {rt.sunday_avg_minutes != null
+                      ? `${Math.round(toNum(rt.sunday_avg_minutes))} min`
+                      : '—'}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-white ring-1 ring-violet-200 p-3">
+                  <div className="text-[11px] uppercase text-slate-500 mb-1">Respuestas en domingo</div>
+                  <div className="text-2xl font-bold text-slate-800">
+                    {formatNumber(toNum(rt.sunday_total_responses))}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-white ring-1 ring-violet-200 p-3">
+                  <div className="text-[11px] uppercase text-slate-500 mb-1">Leads activos en domingo</div>
+                  <div className="text-2xl font-bold text-slate-800">
+                    {formatNumber(toNum(rt.leads_with_sunday_activity))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-6">
             <ChartCard

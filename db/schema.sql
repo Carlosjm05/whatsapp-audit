@@ -268,6 +268,8 @@ CREATE TABLE conversation_metrics (
 CREATE TABLE response_times (
     id                          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     lead_id                     UUID NOT NULL UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
+    -- Tiempos calculados con horario laboral (Lun-Sáb 7-19) — el wall-clock
+    -- distorsionaba KPIs porque sumaba noches y fines de semana.
     first_response_minutes      DECIMAL(10,2),
     avg_response_minutes        DECIMAL(10,2),
     longest_gap_hours           DECIMAL(10,2),
@@ -277,6 +279,9 @@ CREATE TABLE response_times (
     advisor_active_hours        TEXT,
     response_time_category      VARCHAR(20)
                                 CHECK (response_time_category IN ('excelente', 'bueno', 'regular', 'malo', 'critico')),
+    -- Métricas de domingo (separadas — informativas, no entran al SLA).
+    sunday_avg_minutes          DECIMAL(10,2),
+    sunday_response_count       INTEGER DEFAULT 0,
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
