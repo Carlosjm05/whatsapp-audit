@@ -49,10 +49,10 @@ OBJECTION_TYPES = {
 RESPONSE_TIME_CATEGORIES = {"excelente", "bueno", "regular", "malo", "critico"}
 
 FINAL_STATUSES = {
-    "venta_cerrada", "visita_agendada", "negociacion_activa",
-    "seguimiento_activo", "se_enfrio", "ghosteado_por_asesor",
-    "ghosteado_por_lead", "descalificado", "nunca_calificado", "spam",
-    "numero_equivocado", "datos_insuficientes",
+    "venta_cerrada", "cliente_existente", "visita_agendada",
+    "negociacion_activa", "seguimiento_activo", "se_enfrio",
+    "ghosteado_por_asesor", "ghosteado_por_lead", "descalificado",
+    "nunca_calificado", "spam", "numero_equivocado", "datos_insuficientes",
 }
 
 RECOVERY_PROB = {"alta", "media", "baja", "no_aplica"}

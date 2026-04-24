@@ -283,6 +283,83 @@ def get_retry_count(lead_id: str) -> int:
         return int(row["rc"]) if row else 0
 
 
+def write_triage_verdict(lead_id: str, conversation_id: str, verdict: str,
+                         summary_text: str) -> None:
+    """Escribe el resultado del triage de Haiku directamente. Usado en
+    two-pass cuando Haiku clasifica como spam/numero_equivocado (Sonnet
+    no aporta nada). Mantiene leads.analysis_status = 'insufficient_data'
+    para que /ghosts y /overview los excluyan correctamente."""
+    valid = {"spam", "numero_equivocado", "datos_insuficientes"}
+    if verdict not in valid:
+        raise ValueError(f"verdict inválido: {verdict}")
+    with cursor() as cur:
+        cur.execute(
+            """UPDATE leads SET
+                 analysis_status='insufficient_data',
+                 datos_insuficientes=true,
+                 analyzed_at=NOW(),
+                 updated_at=NOW()
+               WHERE id=%s""",
+            (lead_id,),
+        )
+        cur.execute("DELETE FROM conversation_summaries WHERE lead_id=%s", (lead_id,))
+        cur.execute(
+            """INSERT INTO conversation_summaries
+                 (lead_id, conversation_id, summary_text, key_takeaways)
+               VALUES (%s, %s, %s, %s)""",
+            (lead_id, conversation_id, summary_text[:1000], []),
+        )
+        # También escribir conversation_outcomes con el status correcto,
+        # para que el dashboard muestre "spam"/"numero_equivocado" en el
+        # distribution por estado.
+        cur.execute("DELETE FROM conversation_outcomes WHERE lead_id=%s", (lead_id,))
+        cur.execute(
+            """INSERT INTO conversation_outcomes
+                 (lead_id, final_status, is_recoverable,
+                  recovery_probability, recovery_priority, perdido_por)
+               VALUES (%s, %s, FALSE, 'no_aplica', 'no_aplica', 'no_aplica')""",
+            (lead_id, verdict),
+        )
+
+
+def get_lead_history_by_phone(phone: str, exclude_lead_id: str) -> List[Dict[str, Any]]:
+    """Devuelve leads previos del MISMO número de teléfono (distintos del
+    actual). Usado como contexto cruzado: si un lead ya vino antes y se
+    enfrió por precio, eso es información valiosa para el análisis nuevo.
+
+    Retorna hasta 5 leads, ordenados por fecha de último contacto DESC.
+    Solo incluye los que ya fueron analizados (analysis_status='completed')
+    para no pasar basura sin outcome.
+    """
+    if not phone or not phone.strip():
+        return []
+    with cursor(commit=False) as cur:
+        cur.execute(
+            """SELECT
+                 l.id::text AS lead_id,
+                 to_char(l.first_contact_at, 'YYYY-MM-DD') AS first_contact,
+                 to_char(l.last_contact_at,  'YYYY-MM-DD') AS last_contact,
+                 l.conversation_days,
+                 co.final_status,
+                 co.perdido_por,
+                 li.intent_score,
+                 lin.project_name,
+                 lf.budget_estimated_cop
+                 FROM leads l
+                 LEFT JOIN conversation_outcomes co ON co.lead_id = l.id
+                 LEFT JOIN lead_intent li ON li.lead_id = l.id
+                 LEFT JOIN lead_interests lin ON lin.lead_id = l.id
+                 LEFT JOIN lead_financials lf ON lf.lead_id = l.id
+                WHERE l.phone = %s
+                  AND l.id <> %s::uuid
+                  AND l.analysis_status = 'completed'
+                ORDER BY l.last_contact_at DESC NULLS LAST
+                LIMIT 5""",
+            (phone, exclude_lead_id),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
 def count_recent_transient_failures(lead_id: str, hours: int = 24) -> int:
     """Cuenta cuántas entradas de 'failed (transitorio:)' tuvo el lead en
     las últimas N horas. Si es alto, ya no es transitorio — probablemente
@@ -658,6 +735,13 @@ def persist_analysis(
                     "lead_desaparecio","lead_fuera_portafolio","lead_sin_decision",
                     "lead_presupuesto","lead_competencia","ambos","no_aplica",
                 }
+                # Ghost score (#10): calculado en Python para poder
+                # ordenar /ghosts por ROI de recuperación sin tener que
+                # computar-en-SQL pesos complejos.
+                from .ghost_score import compute_from_analysis
+                _last_contact = data.get("_last_contact_at") or o.get("_last_contact_at")
+                g_score = compute_from_analysis(data, _last_contact)
+
                 cur.execute(
                     """INSERT INTO conversation_outcomes
                          (lead_id, final_status, loss_reason, loss_point_description,
@@ -666,8 +750,8 @@ def persist_analysis(
                           recovery_reason, not_recoverable_reason,
                           recovery_strategy, recovery_message_suggestion,
                           alternative_product, recovery_priority,
-                          perdido_por, next_concrete_action)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                          perdido_por, next_concrete_action, ghost_score)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (
                         lead_id,
                         _safe_enum(o.get("final_status"), FINAL_STATUSES_SET, "nunca_calificado"),
@@ -685,6 +769,7 @@ def persist_analysis(
                         _safe_enum(o.get("recovery_priority"), RECOVERY_PRIORITY_SET, "no_aplica"),
                         _safe_enum(o.get("perdido_por"), _PERDIDO_POR, None),
                         o.get("next_concrete_action"),
+                        g_score,
                     ),
                 )
 

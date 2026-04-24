@@ -78,6 +78,146 @@ def list_advisors(_user: str = Depends(get_current_user)) -> List[dict]:
     return rows
 
 
+@router.get("/{name}/patterns")
+def advisor_patterns(
+    name: str,
+    _user: str = Depends(get_current_user),
+) -> dict:
+    """Patrones de comportamiento del asesor (#14).
+
+    A diferencia de `/errors`, que lista errores sueltos, esta vista
+    detecta TENDENCIAS basadas en los agregados de sus leads:
+    - usa mensajes plantilla con frecuencia
+    - responde tarde (P95 > 10 min SLA)
+    - ignora objeciones (was_resolved=false alto)
+    - cierra poco (attempted_close=false alto)
+    - trabaja en horarios inusuales (1-5am)
+    - no propone visitas (proposed_visit=false alto)
+
+    Retorna {patterns: [{type, severity, evidence, affected_leads}]}.
+    """
+    # Verificar que el asesor existe
+    exists = fetch_one(
+        "SELECT 1 FROM advisor_scores WHERE advisor_name ILIKE %s LIMIT 1",
+        [name],
+    )
+    if not exists:
+        raise HTTPException(status_code=404, detail="Asesor no encontrado")
+
+    # Stats agregados del asesor
+    stats = fetch_one(
+        """
+        SELECT
+          COUNT(DISTINCT ascr.lead_id)::int                                      AS total,
+          AVG(rt.first_response_minutes)::float                                   AS avg_rt,
+          percentile_cont(0.95) WITHIN GROUP (
+            ORDER BY rt.first_response_minutes)::float                            AS p95_rt,
+          COUNT(*) FILTER (WHERE ascr.speed_compliance = FALSE)::int              AS sla_viol,
+          COUNT(*) FILTER (WHERE ascr.followup_compliance = FALSE)::int           AS no_followup,
+          COUNT(*) FILTER (WHERE cm.used_generic_messages = TRUE)::int            AS uses_tmpl,
+          COUNT(*) FILTER (WHERE cm.proposed_visit = FALSE)::int                  AS no_visit,
+          COUNT(*) FILTER (WHERE cm.attempted_close = FALSE)::int                 AS no_close,
+          COUNT(*) FILTER (WHERE cm.asked_qualification_questions = FALSE)::int   AS no_qualif,
+          COUNT(DISTINCT ascr.lead_id) FILTER (
+            WHERE EXISTS (SELECT 1 FROM lead_objections lo
+                          WHERE lo.lead_id = ascr.lead_id AND lo.was_resolved = FALSE)
+          )::int                                                                  AS unresolved_obj
+        FROM advisor_scores ascr
+        LEFT JOIN response_times rt ON rt.lead_id = ascr.lead_id
+        LEFT JOIN conversation_metrics cm ON cm.lead_id = ascr.lead_id
+        WHERE ascr.advisor_name ILIKE %s
+        """,
+        [name],
+    ) or {}
+
+    total = int(stats.get("total") or 0)
+    if total == 0:
+        return {"advisor_name": name, "total_leads": 0, "patterns": []}
+
+    def pct(n: int) -> float:
+        return round(100.0 * (n or 0) / total, 1)
+
+    patterns: List[dict] = []
+
+    # Umbrales — los definimos explícitos para que sean auditables y
+    # ajustables (ej. >=50% = patrón claro, >=30% = señal).
+    if pct(stats.get("sla_viol") or 0) >= 30:
+        patterns.append({
+            "type": "respuestas_tardias",
+            "label": "Respuestas tardías (>10 min)",
+            "severity": "high" if pct(stats.get("sla_viol") or 0) >= 50 else "medium",
+            "evidence": f"{stats.get('sla_viol', 0)} de {total} leads tuvieron violaciones de SLA",
+            "percent": pct(stats.get("sla_viol") or 0),
+            "p95_minutes": stats.get("p95_rt"),
+        })
+
+    if pct(stats.get("uses_tmpl") or 0) >= 40:
+        patterns.append({
+            "type": "mensajes_plantilla",
+            "label": "Abuso de mensajes plantilla",
+            "severity": "medium",
+            "evidence": f"{stats.get('uses_tmpl', 0)} de {total} leads recibieron mensajes genéricos",
+            "percent": pct(stats.get("uses_tmpl") or 0),
+        })
+
+    if pct(stats.get("no_qualif") or 0) >= 50:
+        patterns.append({
+            "type": "no_califica",
+            "label": "No califica (no pregunta lo básico)",
+            "severity": "high",
+            "evidence": f"{stats.get('no_qualif', 0)} de {total} leads sin preguntas de calificación",
+            "percent": pct(stats.get("no_qualif") or 0),
+        })
+
+    if pct(stats.get("no_visit") or 0) >= 60:
+        patterns.append({
+            "type": "no_propone_visita",
+            "label": "No propone visita al proyecto",
+            "severity": "high",
+            "evidence": f"{stats.get('no_visit', 0)} de {total} leads sin invitación a visitar",
+            "percent": pct(stats.get("no_visit") or 0),
+        })
+
+    if pct(stats.get("no_close") or 0) >= 70:
+        patterns.append({
+            "type": "no_cierra",
+            "label": "No intenta cerrar",
+            "severity": "high",
+            "evidence": f"{stats.get('no_close', 0)} de {total} leads sin intento de cierre",
+            "percent": pct(stats.get("no_close") or 0),
+        })
+
+    if pct(stats.get("no_followup") or 0) >= 40:
+        patterns.append({
+            "type": "sin_seguimiento",
+            "label": "Abandona el seguimiento",
+            "severity": "high" if pct(stats.get("no_followup") or 0) >= 60 else "medium",
+            "evidence": f"{stats.get('no_followup', 0)} de {total} leads sin seguimiento adecuado",
+            "percent": pct(stats.get("no_followup") or 0),
+        })
+
+    if pct(stats.get("unresolved_obj") or 0) >= 30:
+        patterns.append({
+            "type": "ignora_objeciones",
+            "label": "Ignora objeciones del lead",
+            "severity": "medium",
+            "evidence": f"{stats.get('unresolved_obj', 0)} de {total} leads con objeciones sin resolver",
+            "percent": pct(stats.get("unresolved_obj") or 0),
+        })
+
+    # Ordenar por severidad y luego por porcentaje desc
+    order = {"high": 0, "medium": 1, "low": 2}
+    patterns.sort(key=lambda p: (order.get(p["severity"], 9), -p.get("percent", 0)))
+
+    return {
+        "advisor_name": name,
+        "total_leads": total,
+        "avg_first_response_minutes": stats.get("avg_rt"),
+        "p95_first_response_minutes": stats.get("p95_rt"),
+        "patterns": patterns,
+    }
+
+
 @router.get("/{name}/errors")
 def advisor_errors_detail(
     name: str,

@@ -212,6 +212,18 @@ export default function GhostsPage() {
                         <span className="font-semibold text-slate-900 text-lg">
                           {displayName(l)}
                         </span>
+                        {l.ghost_score != null && (
+                          <span
+                            className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-semibold ${
+                              (l.ghost_score as number) >= 70 ? 'bg-emerald-100 text-emerald-800' :
+                              (l.ghost_score as number) >= 50 ? 'bg-amber-100 text-amber-800' :
+                              'bg-slate-100 text-slate-700'
+                            }`}
+                            title="Prioridad ponderada: intent × urgencia × presupuesto × recencia × culpa del asesor"
+                          >
+                            🎯 {l.ghost_score}
+                          </span>
+                        )}
                         {l.intent_score != null && (
                           <span className="inline-flex items-center gap-1 text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded">
                             Intent {l.intent_score}/10

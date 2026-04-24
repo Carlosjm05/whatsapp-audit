@@ -7,6 +7,7 @@ import { Edit3, Save, X, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react
 const FINAL_STATUS_OPTIONS = [
   { value: '',                        label: '— sin override —' },
   { value: 'venta_cerrada',           label: 'Venta cerrada (ya pagó/firmó)' },
+  { value: 'cliente_existente',       label: 'Cliente existente (ya compró, postventa)' },
   { value: 'visita_agendada',         label: 'Visita agendada' },
   { value: 'negociacion_activa',      label: 'Negociación activa' },
   { value: 'seguimiento_activo',      label: 'Seguimiento activo' },

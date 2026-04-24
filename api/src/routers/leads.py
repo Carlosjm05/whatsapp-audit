@@ -80,12 +80,17 @@ def list_ghost_leads(
         "li.intent_score IS NOT NULL",
         "li.intent_score >= %s",
         # Excluimos outcomes donde NO se puede recuperar:
-        # - venta_cerrada: ya se cerró
+        # - venta_cerrada / cliente_existente: ya compró
         # - spam, numero_equivocado: no son leads reales
         # - descalificado: el lead dijo explícitamente que no quiere más
         # - datos_insuficientes: no tenemos info para actuar
-        "co.final_status NOT IN ('venta_cerrada','spam','numero_equivocado',"
-        "'descalificado','datos_insuficientes')",
+        "co.final_status NOT IN ('venta_cerrada','cliente_existente','spam',"
+        "'numero_equivocado','descalificado','datos_insuficientes')",
+        # Override manual tiene precedencia: si el operador marcó
+        # manualmente venta_cerrada/cliente_existente, NO lo mostramos.
+        "(co.manual_status IS NULL OR co.manual_status NOT IN "
+        "('venta_cerrada','cliente_existente','spam','numero_equivocado',"
+        "'descalificado','datos_insuficientes'))",
         "l.last_contact_at IS NOT NULL",
         "EXTRACT(EPOCH FROM (NOW() - l.last_contact_at))/86400 >= %s",
     ]
@@ -128,6 +133,7 @@ def list_ghost_leads(
           co.recovery_message_suggestion,
           co.next_concrete_action,
           co.alternative_product,
+          co.ghost_score,
           to_char(l.last_contact_at AT TIME ZONE 'UTC',
                   'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_contact_at,
           EXTRACT(EPOCH FROM (NOW() - l.last_contact_at))::int / 86400 AS days_since_contact
@@ -139,21 +145,23 @@ def list_ghost_leads(
         LEFT JOIN lead_interests lin ON lin.lead_id = l.id
         WHERE {where_sql}
         ORDER BY
-          -- 1) Marcados recuperables van primero
+          -- 1) Ghost score ponderado DESC (señal compuesta: intent +
+          --    urgencia + presupuesto + recencia + culpa asesor). Leads
+          --    sin ghost_score (análisis viejo) caen al final.
+          co.ghost_score DESC NULLS LAST,
+          -- 2) Marcados recuperables van antes que los que no
           CASE WHEN co.is_recoverable = TRUE THEN 0 ELSE 1 END,
-          -- 2) Culpa del asesor (fáciles de resucitar) antes que los
-          --    que se enfriaron por el lead mismo
+          -- 3) Culpa del asesor (fáciles de resucitar) antes
           CASE WHEN co.perdido_por LIKE 'asesor_%%' THEN 0 ELSE 1 END,
-          -- 3) Prioridad de recuperación si el análisis la marcó
+          -- 4) Prioridad explícita de recuperación
           CASE co.recovery_priority
             WHEN 'esta_semana' THEN 1
             WHEN 'este_mes' THEN 2
             WHEN 'puede_esperar' THEN 3
             ELSE 4
           END,
-          -- 4) Intent score descendiente
+          -- 5) Intent score descendente como desempate
           li.intent_score DESC,
-          -- 5) Presupuesto descendiente
           lf.budget_estimated_cop DESC NULLS LAST
         LIMIT %s
     """

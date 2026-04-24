@@ -322,6 +322,7 @@ CREATE TABLE conversation_outcomes (
     final_status                VARCHAR(30) NOT NULL
                                 CHECK (final_status IN (
                                     'venta_cerrada',
+                                    'cliente_existente',  -- ya compró, sigue en postventa
                                     'visita_agendada',
                                     'negociacion_activa',
                                     'seguimiento_activo',
@@ -358,6 +359,9 @@ CREATE TABLE conversation_outcomes (
     loss_point_verbatim         TEXT,
     peak_intent_verbatim        TEXT,
     next_concrete_action        TEXT,
+    -- Score ponderado 0..100 calculado por analyzer al persistir.
+    -- Usado por /ghosts para priorizar leads por ROI de recuperación.
+    ghost_score                 INTEGER,
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -531,10 +535,10 @@ ALTER TABLE conversation_outcomes
 ALTER TABLE conversation_outcomes
     ADD CONSTRAINT conversation_outcomes_manual_status_check
     CHECK (manual_status IS NULL OR manual_status IN (
-        'venta_cerrada','visita_agendada','negociacion_activa',
-        'seguimiento_activo','se_enfrio','ghosteado_por_asesor',
-        'ghosteado_por_lead','descalificado','nunca_calificado',
-        'spam','numero_equivocado','datos_insuficientes'
+        'venta_cerrada','cliente_existente','visita_agendada',
+        'negociacion_activa','seguimiento_activo','se_enfrio',
+        'ghosteado_por_asesor','ghosteado_por_lead','descalificado',
+        'nunca_calificado','spam','numero_equivocado','datos_insuficientes'
     ));
 
 CREATE INDEX idx_outcomes_manual_status

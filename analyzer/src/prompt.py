@@ -186,7 +186,7 @@ ESQUEMA JSON:
     "strengths_list": [string]
   }},
   "outcome": {{
-    "final_status": "venta_cerrada"|"visita_agendada"|"negociacion_activa"|"seguimiento_activo"|"se_enfrio"|"ghosteado_por_asesor"|"ghosteado_por_lead"|"descalificado"|"nunca_calificado"|"spam"|"numero_equivocado"|"datos_insuficientes",
+    "final_status": "venta_cerrada"|"cliente_existente"|"visita_agendada"|"negociacion_activa"|"seguimiento_activo"|"se_enfrio"|"ghosteado_por_asesor"|"ghosteado_por_lead"|"descalificado"|"nunca_calificado"|"spam"|"numero_equivocado"|"datos_insuficientes",
     "loss_reason": string|null,
     "loss_point_description": string|null,
     "loss_point_verbatim": string|null,       // CITA LITERAL del msg donde se rompió
@@ -359,6 +359,108 @@ REGLAS CRÍTICAS:
     Condominio como alternativa más económica", "Retomar la consulta
     pendiente sobre permuta con la constructora". Específico,
     accionable, en infinitivo.
+
+═══════════════════════════════════════════════════════════════════════
+REGLA 21 — ESTADO "cliente_existente" (clave contra falsos positivos)
+═══════════════════════════════════════════════════════════════════════
+Hay leads que YA COMPRARON y siguen conversando por trámites/postventa
+(escrituración, avance de obra, entrega, cuotas, problemas del predio).
+Estos NO son leads activos ni recuperables — son clientes. Si aparecen
+en /ghosts es ruido que le hace perder tiempo a Óscar.
+
+Usar final_status="cliente_existente" cuando DETECTES señales duras de
+venta consumada + comunicación posterior sobre ese inmueble:
+
+SEÑALES DURAS DE VENTA CONSUMADA (disparan cliente_existente o venta_cerrada):
+- "adjunto soporte de pago / comprobante / consignación / voucher"
+- "acabo de consignar", "ya pagué la separación", "ya pagué la cuota inicial"
+- "separé el lote 15", "ya firmé el recibo/promesa", "cuando se escritura"
+- "ya me entregaron", "ya nos mudamos", "ya firmé la escritura"
+- envío de copia de cédula, referencias bancarias, formato de cliente
+- "mi cuota sale el día X", "me llegó el desembolso", "el banco aprobó"
+- números de manzana/lote referenciados como suyos: "mi lote 240", "nuestro lote"
+
+DISTINCIÓN:
+- venta_cerrada → cerró DURANTE este chat analizado (hay mensaje explícito
+  en el chat donde confirma la compra, cierra términos, paga separación).
+- cliente_existente → chat empieza o continúa DESPUÉS de la venta, hablando
+  de postventa (trámites, obra, escrituración). La venta fue en otro
+  momento/canal — nosotros solo vemos el after-sales.
+
+Si es cliente_existente:
+- is_recoverable = false
+- recovery_probability = "no_aplica"
+- perdido_por = "no_aplica"
+- intent_score puede seguir siendo alto (9-10) para reflejar la calidad
+  del cliente, pero recovery = no_aplica.
+
+═══════════════════════════════════════════════════════════════════════
+REGLA 22 — TIMESTAMPS EN VERBATIMS
+═══════════════════════════════════════════════════════════════════════
+Cuando devuelvas peak_intent_verbatim y loss_point_verbatim, INCLUÍ el
+timestamp de la línea original al inicio entre corchetes. Formato:
+  "[YYYY-MM-DD HH:MM] cita literal tal como apareció en el chat"
+
+Esto permite que Óscar ubique el momento exacto en la conversación sin
+leer todo el chat. Lo mismo aplica para entradas de errors_list cuando
+citan momentos específicos.
+
+Ejemplos:
+  peak_intent_verbatim: "[2025-11-12 15:23] ¿cuándo puedo ir a verlo este sábado?"
+  loss_point_verbatim: "[2025-11-12 15:47] está muy caro, déjame pensarlo"
+
+Si el timestamp no está disponible (texto parafraseado, verbatim de audio
+sin hora exacta), omitirlo está bien — no inventes un timestamp.
+
+═══════════════════════════════════════════════════════════════════════
+REGLA 23 — SELF-CHECK ANTES DE RESPONDER (crítica)
+═══════════════════════════════════════════════════════════════════════
+Antes de emitir el JSON, validá internamente que tu salida sea COHERENTE.
+Corregí ANTES DE DEVOLVER si detectás contradicciones. Reglas duras:
+
+A. Si final_status == "venta_cerrada" O "cliente_existente":
+   → is_recoverable = false
+   → recovery_probability = "no_aplica"
+   → recovery_priority = "no_aplica"
+   → perdido_por = "no_aplica"
+   → recovery_message_suggestion = null o mensaje de postventa (no de recuperación)
+
+B. Si final_status == "spam" O "numero_equivocado":
+   → intent_score = 1
+   → datos_insuficientes = true
+   → is_recoverable = false
+   → TODO el resto de campos específicos del lead = null
+
+C. Si final_status == "descalificado":
+   → is_recoverable = false
+   → recovery_probability = "baja" o "no_aplica"
+   → debés tener un verbatim explícito del lead diciendo que no le
+     interesa (regla 2). Si no lo tenés, el estado correcto es
+     "se_enfrio" o "ghosteado_por_lead", NO "descalificado".
+
+D. Si intent_score >= 8:
+   → final_status NO puede ser "spam"/"numero_equivocado"/"datos_insuficientes".
+   → Debe haber al menos un verbatim en peak_intent_verbatim.
+
+E. Si intent_score <= 2:
+   → is_recoverable = false.
+   → final_status razonable: "se_enfrio", "ghosteado_por_lead",
+     "datos_insuficientes", "descalificado".
+
+F. Si perdido_por empieza con "asesor_":
+   → el asesor tuvo culpa, entonces errors_list NO puede estar vacío.
+   → Al menos 1 error específico con evidencia.
+
+G. Si speed_compliance == false:
+   → errors_list debe incluir al menos una entrada de tiempo de respuesta.
+
+H. Si final_status == "visita_agendada":
+   → metrics.proposed_visit = true.
+   → metrics.attempted_close = true.
+
+Si detectás una contradicción y no tenés evidencia fuerte para un lado,
+prefí el estado MÁS CONSERVADOR (ej. "se_enfrio" antes que "descalificado";
+"seguimiento_activo" antes que "negociacion_activa").
 
 ═══════════════════════════════════════════════════════════════════════
 RECORDATORIO FINAL: Óscar va a usar este análisis para RESUCITAR LEADS.

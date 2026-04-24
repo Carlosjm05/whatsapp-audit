@@ -34,6 +34,15 @@ from .validator import AnalysisOutput
 log = logging.getLogger("analyzer")
 
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5")
+# Modelo "cheap" para triaje previo (two-pass) — clasifica chats basura
+# sin gastar Sonnet. Haiku cuesta ~1/15 de Sonnet.
+CHEAP_MODEL = os.getenv("CHEAP_MODEL", "claude-haiku-4-5")
+# Two-pass activado por default. Se desactiva con TWO_PASS=false si da
+# problemas (fallback a single-call Sonnet).
+TWO_PASS_ENABLED = os.getenv("TWO_PASS", "true").lower() != "false"
+# Chats más cortos que este umbral NO escalan a Sonnet ni pasan triage:
+# son demasiado simples, Sonnet/Haiku dan el mismo resultado. Default
+# pasa a usar MIN_WORDS para consistencia.
 NUM_WORKERS = int(os.getenv("ANALYZER_WORKERS", os.getenv("NUM_WORKERS", "2")))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 MIN_WORDS = 20
@@ -43,10 +52,20 @@ MIN_WORDS = 20
 # 600k chars ≈ 150k tokens de entrada — seguro para Sonnet 4.5.
 MAX_TRANSCRIPT_CHARS = 600_000
 
+# Costos Sonnet 4.5 (por M tokens, ver docs.anthropic.com).
 INPUT_TOK_COST = 3.0 / 1_000_000
 OUTPUT_TOK_COST = 15.0 / 1_000_000
 CACHE_READ_COST = 0.30 / 1_000_000
 CACHE_WRITE_COST = 3.75 / 1_000_000
+
+# Costos Haiku 4.5 (aprox): input $1/M, output $5/M. No cacheamos en
+# el pass de triage (prompt mucho más corto, no vale la pena).
+HAIKU_INPUT_COST = 1.0 / 1_000_000
+HAIKU_OUTPUT_COST = 5.0 / 1_000_000
+
+# Estados que el triage puede marcar como "cerrado" sin escalar a Sonnet.
+# Son chats donde el análisis profundo no cambia nada de valor.
+TRIAGE_TERMINAL_STATES = {"spam", "numero_equivocado", "datos_insuficientes"}
 
 _shutdown = threading.Event()
 
@@ -190,6 +209,55 @@ def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
         hour_counts[m.ts.hour] = hour_counts.get(m.ts.hour, 0) + 1
     active = ",".join(f"{h}:{hour_counts[h]}" for h in sorted(hour_counts)) or None
 
+    # ─── Métricas cualitativas (hints ricos para Claude) ──────
+    # Ratio asesor/lead — detecta "asesor ausente" (lead se esfuerza,
+    # asesor apenas contesta) o "asesor monológico".
+    ratio_advisor_lead = (
+        round(len(advisor) / len(lead), 2) if lead else None
+    )
+
+    # Palabras promedio por mensaje del asesor — detecta plantillas
+    # cortas/genéricas vs respuestas pensadas.
+    advisor_word_counts = [len((m.body or "").split()) for m in advisor if not m.is_audio]
+    avg_words_per_advisor_msg = (
+        round(mean(advisor_word_counts), 1) if advisor_word_counts else None
+    )
+    lead_word_counts = [len((m.body or "").split()) for m in lead if not m.is_audio]
+    avg_words_per_lead_msg = (
+        round(mean(lead_word_counts), 1) if lead_word_counts else None
+    )
+
+    # Detección simple de plantillas: >=3 mensajes del asesor con los
+    # primeros 40 chars idénticos (ignorando espacios y caso).
+    def _head(s: str, n: int = 40) -> str:
+        return " ".join((s or "").lower().split())[:n]
+    head_counts: Dict[str, int] = {}
+    for m in advisor:
+        if m.is_audio or not m.body:
+            continue
+        h = _head(m.body)
+        if len(h) < 20:
+            continue
+        head_counts[h] = head_counts.get(h, 0) + 1
+    uses_templates = any(c >= 3 for c in head_counts.values())
+    template_samples = [h for h, c in head_counts.items() if c >= 3][:2]
+
+    # Horarios inusuales del asesor (1-5 AM local): indica automatización,
+    # descuido o asesor trabajando a deshoras. No es error per se pero
+    # Claude puede usarlo como señal.
+    unusual_hours_advisor = sum(
+        1 for m in advisor if m.ts.hour in {1, 2, 3, 4, 5}
+    )
+
+    # Instrumentación #2: contamos referencias a media visual en el
+    # transcripto. Si hay muchas "(imagen)" y Claude marca venta_cerrada
+    # como ghost, es señal de que conviene activar Vision para leer PDFs
+    # de soporte de pago.
+    image_markers = sum(1 for m in msgs if "imagen" in (m.body or "").lower()
+                        or "(imagen)" in (m.body or ""))
+    document_markers = sum(1 for m in msgs if "documento" in (m.body or "").lower()
+                           or "(documento)" in (m.body or ""))
+
     return {
         "total_messages": total,
         "advisor_messages": len(advisor),
@@ -211,14 +279,31 @@ def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
         # Domingo (separado del SLA, solo informativo):
         "sunday_response_minutes_avg": sunday_avg,
         "sunday_response_count": len(sunday_gaps),
+        # Métricas cualitativas nuevas (hints ricos para Claude).
+        "ratio_advisor_lead_messages": ratio_advisor_lead,
+        "avg_words_per_advisor_msg": avg_words_per_advisor_msg,
+        "avg_words_per_lead_msg": avg_words_per_lead_msg,
+        "uses_templates": uses_templates,
+        "template_samples": template_samples,
+        "unusual_hours_advisor_count": unusual_hours_advisor,
+        # Instrumentación Vision (#2): para decidir si vale activar
+        # lectura de imágenes/PDFs del chat.
+        "image_markers_count": image_markers,
+        "document_markers_count": document_markers,
     }
 
 
 def _format_hints(metadata: Dict[str, Any], computed: Dict[str, Any],
-                  transcript: str) -> str:
+                  transcript: str,
+                  history: Optional[List[Dict[str, Any]]] = None) -> str:
     """Construye hints para Claude. Incluye metadatos, métricas calculadas
     y una señal clave: quién envió el último mensaje (crítico para
-    distinguir ghosteado_por_asesor vs ghosteado_por_lead)."""
+    distinguir ghosteado_por_asesor vs ghosteado_por_lead).
+
+    Si `history` (leads previos del mismo teléfono) está presente, se
+    agrega como contexto — permite a Claude detectar patrones como "este
+    lead ya contactó antes y se enfrió por precio" o "este número ya
+    compró, ahora probablemente es postventa"."""
     lines = ["DATOS CALCULADOS (NO los repitas en tu JSON, son contexto):"]
     lines.append(f"- telefono del lead: {metadata.get('phone')}")
     lines.append(f"- nombre WhatsApp: {metadata.get('whatsapp_name')}")
@@ -228,9 +313,26 @@ def _format_hints(metadata: Dict[str, Any], computed: Dict[str, Any],
         "first_contact_at", "last_contact_at", "conversation_days",
         "first_response_minutes", "avg_response_minutes",
         "longest_gap_hours", "response_time_category", "advisor_active_hours",
+        # Hints cualitativos nuevos — usalos para calibrar tu análisis.
+        "ratio_advisor_lead_messages",  # <1 = asesor escribe menos que el lead
+        "avg_words_per_advisor_msg",    # <10 = plantillas/respuestas secas
+        "avg_words_per_lead_msg",
+        "unusual_hours_advisor_count",  # mensajes asesor 1-5am
+        "image_markers_count",          # imágenes en el chat
+        "document_markers_count",       # documentos en el chat
     ):
         if computed.get(k) is not None:
             lines.append(f"- {k}: {computed[k]}")
+
+    # Señal de plantilla: si el asesor repite el mismo inicio de mensaje.
+    # Crítico para errors_list ("usó mensaje genérico/plantilla").
+    if computed.get("uses_templates"):
+        lines.append(
+            "- uses_templates: true (asesor reutilizó el mismo inicio de "
+            "mensaje 3+ veces — probable uso de plantilla. Considera en errors_list)"
+        )
+        for sample in (computed.get("template_samples") or []):
+            lines.append(f"  - plantilla detectada: \"{sample}...\"")
 
     # SLA de 10 min: pasar conteo y muestras al LLM para que las
     # incluya en errors_list con evidencia específica.
@@ -289,7 +391,51 @@ def _format_hints(metadata: Dict[str, Any], computed: Dict[str, Any],
         except Exception:
             pass
 
+    # Historial cross-lead por teléfono (#8): si este número ya apareció
+    # en chats anteriores, Claude puede detectar patrones ("ya compró →
+    # es postventa", "ya se enfrió 2 veces → lead difícil", etc.).
+    if history:
+        lines.append("")
+        lines.append(f"HISTORIAL DE ESTE TELÉFONO ({len(history)} chat(s) previos):")
+        for i, h in enumerate(history, 1):
+            parts = [
+                f"  {i}. {h.get('first_contact','?')} → {h.get('last_contact','?')}"
+                f" ({h.get('conversation_days', 0)} días)"
+            ]
+            if h.get("final_status"):
+                parts.append(f"outcome={h['final_status']}")
+            if h.get("perdido_por") and h["perdido_por"] != "no_aplica":
+                parts.append(f"perdido_por={h['perdido_por']}")
+            if h.get("intent_score") is not None:
+                parts.append(f"intent={h['intent_score']}/10")
+            if h.get("project_name"):
+                parts.append(f"proyecto={h['project_name']}")
+            if h.get("budget_estimated_cop"):
+                parts.append(f"presupuesto≈{h['budget_estimated_cop']:,}")
+            lines.append(" · ".join(parts))
+        lines.append(
+            "  (pista: si algún chat previo es 'venta_cerrada' o "
+            "'cliente_existente', el actual probablemente es postventa — "
+            "considera final_status='cliente_existente')"
+        )
+
     return "\n".join(lines)
+
+
+_TRIAGE_PROMPT = """Eres un clasificador rápido de conversaciones de WhatsApp.
+
+Tu único trabajo: en UNA palabra, determinar si la conversación es analizable como lead comercial real o descartable.
+
+Reglas:
+- "spam" si es propaganda masiva, publicidad no solicitada, bot/automatización ajena.
+- "numero_equivocado" si el lead explícitamente dice que llegó al número por error o no conoce Ortiz Finca Raíz.
+- "datos_insuficientes" si hay menos de 3 intercambios reales (saludo+genérico no cuenta) o el contenido no permite evaluar interés.
+- "analizable" en CUALQUIER otro caso — incluso leads que se ghostearon o fueron atendidos mal, siempre que haya algo que analizar.
+
+IMPORTANTE: en caso de duda, respondé "analizable". El objetivo es NO descartar leads reales.
+
+Respondé SOLO con una de las 4 palabras: spam | numero_equivocado | datos_insuficientes | analizable.
+No expliques, no justifiques, solo la palabra."""
 
 
 class ClaudeClient:
@@ -305,7 +451,64 @@ class ClaudeClient:
         self.total_out = 0
         self.total_cache_read = 0
         self.total_cache_write = 0
+        # Contadores separados para triage (Haiku).
+        self.triage_in = 0
+        self.triage_out = 0
         self._lock = threading.Lock()
+
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(MAX_RETRIES),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=retry_if_exception_type((
+            anthropic.APIConnectionError,
+            anthropic.APITimeoutError,
+            anthropic.RateLimitError,
+            anthropic.InternalServerError,
+        )),
+    )
+    def triage(self, transcript: str) -> Tuple[str, float]:
+        """Pass #1 del two-pass: clasifica el chat en 1 palabra con Haiku.
+
+        Retorna (clasificacion, costo_usd). Clasificacion ∈
+        {"spam", "numero_equivocado", "datos_insuficientes", "analizable"}.
+        Si la respuesta del modelo no matchea, devolvemos "analizable"
+        como defensa (prefí escalar a Sonnet antes que perder un lead real).
+        """
+        # Para triage truncamos a 4000 chars — alcanza para clasificar y
+        # mantiene costo <$0.001/lead.
+        short = transcript if len(transcript) <= 4000 else (
+            transcript[:3000] + "\n...[truncado]...\n" + transcript[-1000:]
+        )
+        resp = self.client.messages.create(
+            model=CHEAP_MODEL,
+            max_tokens=10,                      # 1 palabra suficiente
+            system=_TRIAGE_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": f"TRANSCRIPCIÓN:\n{short}\n\nClasificación (una palabra):",
+            }],
+        )
+        text = "".join(
+            b.text for b in resp.content if getattr(b, "type", None) == "text"
+        ).strip().lower()
+
+        usage = resp.usage
+        in_tok = getattr(usage, "input_tokens", 0) or 0
+        out_tok = getattr(usage, "output_tokens", 0) or 0
+        cost = in_tok * HAIKU_INPUT_COST + out_tok * HAIKU_OUTPUT_COST
+
+        with self._lock:
+            self.triage_in += in_tok
+            self.triage_out += out_tok
+
+        # Defensive: parseamos la respuesta. Puede venir con punto o prefijo.
+        for valid in ("spam", "numero_equivocado", "datos_insuficientes", "analizable"):
+            if valid in text:
+                return valid, cost
+        # Si el modelo devolvió algo raro, escalamos por seguridad.
+        log.warning("triage respuesta inesperada %r → analizable", text[:50])
+        return "analizable", cost
 
     @retry(
         reraise=True,
@@ -427,7 +630,44 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
         computed["conversation_days"] = max(1, (lm.date() - fm.date()).days + 1)
 
     metadata = {"phone": lead["phone"], "whatsapp_name": lead["whatsapp_name"]}
-    hints = _format_hints(metadata, computed, transcript)
+
+    # Histórico cross-lead: leads previos del mismo teléfono ya analizados.
+    # Útil para detectar "ya compró → postventa" o "ya se enfrió antes".
+    # Se desactiva con HISTORY_LOOKUP=false si introduce problemas.
+    history = None
+    if os.getenv("HISTORY_LOOKUP", "true").lower() != "false":
+        try:
+            history = db.get_lead_history_by_phone(lead["phone"], lead_id)
+        except Exception as e:
+            log.warning("lead %s: no se pudo traer historial: %s", lead_id, e)
+            history = None
+
+    hints = _format_hints(metadata, computed, transcript, history=history)
+
+    # ─── Two-pass (#9): triage con Haiku antes de gastar Sonnet ────────
+    # Si el chat es spam / número equivocado / datos insuficientes, lo
+    # resolvemos con Haiku (1/15 del costo de Sonnet) y salimos.
+    # Solo los "analizables" escalan a Sonnet.
+    triage_cost = 0.0
+    if TWO_PASS_ENABLED:
+        try:
+            verdict, triage_cost = client.triage(transcript)
+        except Exception as e:
+            log.warning("lead %s triage fallo, cayendo a single-pass Sonnet: %s",
+                        lead_id, e)
+            verdict = "analizable"
+
+        if verdict in TRIAGE_TERMINAL_STATES:
+            # Cerrar el análisis directamente — no vale la pena Sonnet.
+            log.info("lead %s → %s (triage Haiku, costo $%.6f)",
+                     lead_id, verdict, triage_cost)
+            db.mark_history_processing(lead_id)
+            db.write_triage_verdict(
+                lead_id, conversation_id, verdict,
+                f"Clasificado como {verdict} por triage. {_short_summary(transcript)}",
+            )
+            db.mark_history_completed(lead_id, CHEAP_MODEL, triage_cost)
+            return True, triage_cost
 
     # Promover a 'processing' JUSTO antes de la llamada a Claude. Así si
     # cae un transitorio (5xx, connection, timeout) NO dejamos una fila
@@ -534,6 +774,10 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
         data_dict["advisor"]["advisor_name"] = normalize_asesor(
             data_dict["advisor"].get("advisor_name")
         )
+
+    # Inyectar last_contact_at en `data_dict` para que ghost_score lo
+    # pueda leer sin pasar otro argumento a persist_analysis.
+    data_dict["_last_contact_at"] = computed.get("last_contact_at")
 
     try:
         db.persist_analysis(

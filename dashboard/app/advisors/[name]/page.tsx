@@ -9,6 +9,7 @@ import type {
   AdvisorErrorGroup,
 } from '@/types/api';
 import PageHeader from '@/components/PageHeader';
+import AdvisorPatternsPanel from '@/components/AdvisorPatternsPanel';
 import KpiCard from '@/components/KpiCard';
 import { ChartCard, ChartBar, ChartPie } from '@/components/Charts';
 import { ErrorState } from '@/components/LoadingState';
@@ -161,6 +162,10 @@ export default function AdvisorDetailPage() {
               title={s.advisor_name}
               subtitle="Desempeño detallado del asesor"
             />
+
+            <div className="mb-6">
+              <AdvisorPatternsPanel name={s.advisor_name} />
+            </div>
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
               <KpiCard
