@@ -107,22 +107,37 @@ def response_time_minutes(
     """Calcula el tiempo de respuesta efectivo y devuelve también el
     bucket: 'business' (Lun-Sáb 7-19) o 'sunday'.
 
-    Si el mensaje del lead llegó en domingo, lo marcamos como 'sunday'
-    y devolvemos el tiempo wall-clock crudo (Óscar lo quiere ver para
-    control, pero NO debe sumar al promedio de business).
-
-    Si el mensaje del lead llegó fuera de business pero NO en domingo
-    (ej. martes 23:00), el "reloj" arranca al próximo abrir
-    (miércoles 7:00). Eso es fair: no podés exigir respuesta inmediata
-    a las 23:00 entre semana.
+    REGLAS:
+      - Si AMBOS mensajes son del MISMO domingo → bucket 'sunday',
+        wall-clock minutes (Óscar quiere ver cuánto tarda el asesor
+        cuando responde activamente en domingo).
+      - Si el lead escribe domingo y el asesor responde lunes o
+        después → bucket 'business', tiempo desde el lunes 7am.
+        Esto evita que un caso "lead escribió domingo, asesor
+        respondió martes" infle artificialmente el avg de domingo
+        con números tipo 4000 min.
+      - Si el lead escribe entre semana fuera de horario (ej. mar
+        23:00) → bucket 'business', tiempo desde el próximo abrir.
+      - Si el asesor responde antes del próximo abrir → 0 min.
     """
-    if is_sunday(lead_msg_at):
-        wall_clock = (advisor_msg_at - lead_msg_at).total_seconds() / 60.0
-        return round(max(0.0, wall_clock), 2), "sunday"
+    # Caso "respuesta dentro del mismo domingo"
+    if is_sunday(lead_msg_at) and is_sunday(advisor_msg_at):
+        # Asegurar que es la MISMA fecha domingo (no dos domingos distintos
+        # con una semana de diferencia, lo cual sería absurdo pero defensivo).
+        if lead_msg_at.date() == advisor_msg_at.date():
+            wall_clock = (advisor_msg_at - lead_msg_at).total_seconds() / 60.0
+            return round(max(0.0, wall_clock), 2), "sunday"
 
+    # Caso "respuesta dentro del mismo bloque business" o cualquier
+    # otro caso (incluido "lead domingo, respuesta lun+"):
     effective_start = _next_business_open(lead_msg_at)
     if advisor_msg_at <= effective_start:
-        # Asesor respondió ANTES del próximo bloque laboral (overachiever).
-        # Tiempo efectivo = 0 minutos en horario laboral.
+        # Asesor respondió ANTES del próximo bloque laboral (overachiever)
+        # o el lead escribió en horario y el asesor también.
+        # Si ambos están dentro de horario activo, el cálculo correcto es
+        # la diferencia directa.
+        if is_business_time(lead_msg_at) and is_business_time(advisor_msg_at):
+            mins = (advisor_msg_at - lead_msg_at).total_seconds() / 60.0
+            return round(max(0.0, mins), 2), "business"
         return 0.0, "business"
     return business_minutes_between(effective_start, advisor_msg_at), "business"
