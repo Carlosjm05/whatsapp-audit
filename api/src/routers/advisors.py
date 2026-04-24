@@ -104,7 +104,14 @@ def advisor_patterns(
     if not exists:
         raise HTTPException(status_code=404, detail="Asesor no encontrado")
 
-    # Stats agregados del asesor
+    # Stats agregados del asesor.
+    #
+    # Denominadores ESPECÍFICOS por métrica: antes usábamos `total` (todos
+    # los leads) pero `COUNT FILTER (WHERE x = FALSE)` descarta NULLs —
+    # los leads sin fila `conversation_metrics` o sin `speed_compliance`
+    # evaluado no cuentan ni como TRUE ni como FALSE, subestimando
+    # sistemáticamente los porcentajes. Ahora cada métrica usa como
+    # denominador solo los leads que tienen ese campo determinable.
     stats = fetch_one(
         """
         SELECT
@@ -112,16 +119,28 @@ def advisor_patterns(
           AVG(rt.first_response_minutes)::float                                   AS avg_rt,
           percentile_cont(0.95) WITHIN GROUP (
             ORDER BY rt.first_response_minutes)::float                            AS p95_rt,
-          COUNT(*) FILTER (WHERE ascr.speed_compliance = FALSE)::int              AS sla_viol,
-          COUNT(*) FILTER (WHERE ascr.followup_compliance = FALSE)::int           AS no_followup,
-          COUNT(*) FILTER (WHERE cm.used_generic_messages = TRUE)::int            AS uses_tmpl,
-          COUNT(*) FILTER (WHERE cm.proposed_visit = FALSE)::int                  AS no_visit,
-          COUNT(*) FILTER (WHERE cm.attempted_close = FALSE)::int                 AS no_close,
-          COUNT(*) FILTER (WHERE cm.asked_qualification_questions = FALSE)::int   AS no_qualif,
+
+          -- SLA / followup: denominador = leads con el flag evaluado (no NULL).
+          COUNT(*) FILTER (WHERE ascr.speed_compliance IS NOT NULL)::int           AS sla_denom,
+          COUNT(*) FILTER (WHERE ascr.speed_compliance = FALSE)::int               AS sla_viol,
+          COUNT(*) FILTER (WHERE ascr.followup_compliance IS NOT NULL)::int        AS followup_denom,
+          COUNT(*) FILTER (WHERE ascr.followup_compliance = FALSE)::int            AS no_followup,
+
+          -- Conversation metrics: denominador = leads con fila cm (JOIN no NULL).
+          COUNT(*) FILTER (WHERE cm.lead_id IS NOT NULL)::int                      AS cm_denom,
+          COUNT(*) FILTER (WHERE cm.used_generic_messages = TRUE)::int             AS uses_tmpl,
+          COUNT(*) FILTER (WHERE cm.proposed_visit = FALSE)::int                   AS no_visit,
+          COUNT(*) FILTER (WHERE cm.attempted_close = FALSE)::int                  AS no_close,
+          COUNT(*) FILTER (WHERE cm.asked_qualification_questions = FALSE)::int    AS no_qualif,
+
+          COUNT(DISTINCT ascr.lead_id) FILTER (
+            WHERE EXISTS (SELECT 1 FROM lead_objections lo
+                          WHERE lo.lead_id = ascr.lead_id)
+          )::int                                                                   AS obj_denom,
           COUNT(DISTINCT ascr.lead_id) FILTER (
             WHERE EXISTS (SELECT 1 FROM lead_objections lo
                           WHERE lo.lead_id = ascr.lead_id AND lo.was_resolved = FALSE)
-          )::int                                                                  AS unresolved_obj
+          )::int                                                                   AS unresolved_obj
         FROM advisor_scores ascr
         LEFT JOIN response_times rt ON rt.lead_id = ascr.lead_id
         LEFT JOIN conversation_metrics cm ON cm.lead_id = ascr.lead_id
@@ -134,75 +153,94 @@ def advisor_patterns(
     if total == 0:
         return {"advisor_name": name, "total_leads": 0, "patterns": []}
 
-    def pct(n: int) -> float:
-        return round(100.0 * (n or 0) / total, 1)
+    def pct_of(n: int, denom_key: str) -> float:
+        """% usando un denominador específico. Si el denominador es 0 o
+        la métrica aún no se evaluó para ningún lead, devolvemos 0."""
+        denom = int(stats.get(denom_key) or 0)
+        if denom == 0:
+            return 0.0
+        return round(100.0 * (n or 0) / denom, 1)
 
     patterns: List[dict] = []
 
     # Umbrales — los definimos explícitos para que sean auditables y
-    # ajustables (ej. >=50% = patrón claro, >=30% = señal).
-    if pct(stats.get("sla_viol") or 0) >= 30:
+    # ajustables (ej. >=50% = patrón claro, >=30% = señal). Cada métrica
+    # usa SU denominador (leads con el campo evaluado) — no el total
+    # global, para no subestimar.
+    sla_denom = int(stats.get("sla_denom") or 0)
+    followup_denom = int(stats.get("followup_denom") or 0)
+    cm_denom = int(stats.get("cm_denom") or 0)
+    obj_denom = int(stats.get("obj_denom") or 0)
+
+    sla_pct = pct_of(stats.get("sla_viol") or 0, "sla_denom")
+    if sla_pct >= 30 and sla_denom > 0:
         patterns.append({
             "type": "respuestas_tardias",
             "label": "Respuestas tardías (>10 min)",
-            "severity": "high" if pct(stats.get("sla_viol") or 0) >= 50 else "medium",
-            "evidence": f"{stats.get('sla_viol', 0)} de {total} leads tuvieron violaciones de SLA",
-            "percent": pct(stats.get("sla_viol") or 0),
+            "severity": "high" if sla_pct >= 50 else "medium",
+            "evidence": f"{stats.get('sla_viol', 0)} de {sla_denom} leads con SLA evaluado",
+            "percent": sla_pct,
             "p95_minutes": stats.get("p95_rt"),
         })
 
-    if pct(stats.get("uses_tmpl") or 0) >= 40:
+    tmpl_pct = pct_of(stats.get("uses_tmpl") or 0, "cm_denom")
+    if tmpl_pct >= 40 and cm_denom > 0:
         patterns.append({
             "type": "mensajes_plantilla",
             "label": "Abuso de mensajes plantilla",
             "severity": "medium",
-            "evidence": f"{stats.get('uses_tmpl', 0)} de {total} leads recibieron mensajes genéricos",
-            "percent": pct(stats.get("uses_tmpl") or 0),
+            "evidence": f"{stats.get('uses_tmpl', 0)} de {cm_denom} leads recibieron mensajes genéricos",
+            "percent": tmpl_pct,
         })
 
-    if pct(stats.get("no_qualif") or 0) >= 50:
+    qualif_pct = pct_of(stats.get("no_qualif") or 0, "cm_denom")
+    if qualif_pct >= 50 and cm_denom > 0:
         patterns.append({
             "type": "no_califica",
             "label": "No califica (no pregunta lo básico)",
             "severity": "high",
-            "evidence": f"{stats.get('no_qualif', 0)} de {total} leads sin preguntas de calificación",
-            "percent": pct(stats.get("no_qualif") or 0),
+            "evidence": f"{stats.get('no_qualif', 0)} de {cm_denom} leads sin preguntas de calificación",
+            "percent": qualif_pct,
         })
 
-    if pct(stats.get("no_visit") or 0) >= 60:
+    visit_pct = pct_of(stats.get("no_visit") or 0, "cm_denom")
+    if visit_pct >= 60 and cm_denom > 0:
         patterns.append({
             "type": "no_propone_visita",
             "label": "No propone visita al proyecto",
             "severity": "high",
-            "evidence": f"{stats.get('no_visit', 0)} de {total} leads sin invitación a visitar",
-            "percent": pct(stats.get("no_visit") or 0),
+            "evidence": f"{stats.get('no_visit', 0)} de {cm_denom} leads sin invitación a visitar",
+            "percent": visit_pct,
         })
 
-    if pct(stats.get("no_close") or 0) >= 70:
+    close_pct = pct_of(stats.get("no_close") or 0, "cm_denom")
+    if close_pct >= 70 and cm_denom > 0:
         patterns.append({
             "type": "no_cierra",
             "label": "No intenta cerrar",
             "severity": "high",
-            "evidence": f"{stats.get('no_close', 0)} de {total} leads sin intento de cierre",
-            "percent": pct(stats.get("no_close") or 0),
+            "evidence": f"{stats.get('no_close', 0)} de {cm_denom} leads sin intento de cierre",
+            "percent": close_pct,
         })
 
-    if pct(stats.get("no_followup") or 0) >= 40:
+    followup_pct = pct_of(stats.get("no_followup") or 0, "followup_denom")
+    if followup_pct >= 40 and followup_denom > 0:
         patterns.append({
             "type": "sin_seguimiento",
             "label": "Abandona el seguimiento",
-            "severity": "high" if pct(stats.get("no_followup") or 0) >= 60 else "medium",
-            "evidence": f"{stats.get('no_followup', 0)} de {total} leads sin seguimiento adecuado",
-            "percent": pct(stats.get("no_followup") or 0),
+            "severity": "high" if followup_pct >= 60 else "medium",
+            "evidence": f"{stats.get('no_followup', 0)} de {followup_denom} leads con seguimiento evaluado",
+            "percent": followup_pct,
         })
 
-    if pct(stats.get("unresolved_obj") or 0) >= 30:
+    unres_pct = pct_of(stats.get("unresolved_obj") or 0, "obj_denom")
+    if unres_pct >= 30 and obj_denom > 0:
         patterns.append({
             "type": "ignora_objeciones",
             "label": "Ignora objeciones del lead",
             "severity": "medium",
-            "evidence": f"{stats.get('unresolved_obj', 0)} de {total} leads con objeciones sin resolver",
-            "percent": pct(stats.get("unresolved_obj") or 0),
+            "evidence": f"{stats.get('unresolved_obj', 0)} de {obj_denom} leads con objeciones sin resolver",
+            "percent": unres_pct,
         })
 
     # Ordenar por severidad y luego por porcentaje desc
@@ -253,7 +291,7 @@ def advisor_errors_detail(
         LEFT JOIN conversation_outcomes co ON co.lead_id = l.id
         LEFT JOIN response_times rt ON rt.lead_id = l.id,
         LATERAL unnest(COALESCE(ascr.errors_list, ARRAY[]::text[])) AS err
-        WHERE ascr.advisor_name = %s
+        WHERE ascr.advisor_name ILIKE %s
           AND err IS NOT NULL AND err <> ''
         GROUP BY err
         ORDER BY occurrences DESC, err ASC
@@ -285,7 +323,7 @@ def advisor_detail(name: str, _user: str = Depends(get_current_user)) -> dict:
         FROM advisor_scores ascr
         LEFT JOIN conversation_outcomes co ON co.lead_id = ascr.lead_id
         LEFT JOIN response_times rt ON rt.lead_id = ascr.lead_id
-        WHERE ascr.advisor_name = %s
+        WHERE ascr.advisor_name ILIKE %s
         GROUP BY ascr.advisor_name
         """,
         [name],
@@ -297,7 +335,7 @@ def advisor_detail(name: str, _user: str = Depends(get_current_user)) -> dict:
         """
         SELECT err AS text, COUNT(*)::int AS count
           FROM advisor_scores, LATERAL unnest(COALESCE(errors_list, ARRAY[]::text[])) AS err
-         WHERE advisor_name = %s
+         WHERE advisor_name ILIKE %s
          GROUP BY err
          ORDER BY count DESC
          LIMIT 20
@@ -308,7 +346,7 @@ def advisor_detail(name: str, _user: str = Depends(get_current_user)) -> dict:
         """
         SELECT s AS text, COUNT(*)::int AS count
           FROM advisor_scores, LATERAL unnest(COALESCE(strengths_list, ARRAY[]::text[])) AS s
-         WHERE advisor_name = %s
+         WHERE advisor_name ILIKE %s
          GROUP BY s
          ORDER BY count DESC
          LIMIT 20
@@ -320,7 +358,7 @@ def advisor_detail(name: str, _user: str = Depends(get_current_user)) -> dict:
         SELECT COALESCE(co.final_status, 'unknown') AS final_status, COUNT(*)::int AS count
           FROM advisor_scores ascr
           LEFT JOIN conversation_outcomes co ON co.lead_id = ascr.lead_id
-         WHERE ascr.advisor_name = %s
+         WHERE ascr.advisor_name ILIKE %s
          GROUP BY co.final_status
          ORDER BY count DESC
         """,
@@ -334,7 +372,7 @@ def advisor_detail(name: str, _user: str = Depends(get_current_user)) -> dict:
           FROM advisor_scores ascr
           JOIN leads l ON l.id = ascr.lead_id
           LEFT JOIN conversation_outcomes co ON co.lead_id = l.id
-         WHERE ascr.advisor_name = %s
+         WHERE ascr.advisor_name ILIKE %s
          ORDER BY l.last_contact_at DESC NULLS LAST
          LIMIT 50
         """,

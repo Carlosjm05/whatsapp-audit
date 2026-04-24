@@ -1,7 +1,9 @@
 """Panel 2: Recoverable leads + lead detail."""
 from __future__ import annotations
 
+import logging
 import uuid
+from functools import lru_cache
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -12,12 +14,35 @@ from ..db import fetch_all, fetch_one, execute
 from ..schemas import LeadDetail, PagedRecoverableLeads
 
 
+log = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _ghost_score_column_exists() -> bool:
+    """Cacheado una vez por proceso. Devuelve True si
+    conversation_outcomes.ghost_score existe (migración 008 aplicada).
+    Si no existe, /ghosts cae a ordenamiento antiguo sin crashear."""
+    row = fetch_one(
+        """SELECT 1 AS has_col
+             FROM information_schema.columns
+            WHERE table_name = 'conversation_outcomes'
+              AND column_name = 'ghost_score'"""
+    )
+    has = bool(row)
+    if not has:
+        log.warning(
+            "conversation_outcomes.ghost_score NO existe — correr migración 008. "
+            "Hasta entonces /ghosts ordena por criterios legacy."
+        )
+    return has
+
+
 # Estados válidos del override manual (mismos que final_status del análisis IA).
 _VALID_FINAL_STATUSES = {
-    'venta_cerrada', 'visita_agendada', 'negociacion_activa',
-    'seguimiento_activo', 'se_enfrio', 'ghosteado_por_asesor',
-    'ghosteado_por_lead', 'descalificado', 'nunca_calificado',
-    'spam', 'numero_equivocado', 'datos_insuficientes',
+    'venta_cerrada', 'cliente_existente', 'visita_agendada',
+    'negociacion_activa', 'seguimiento_activo', 'se_enfrio',
+    'ghosteado_por_asesor', 'ghosteado_por_lead', 'descalificado',
+    'nunca_calificado', 'spam', 'numero_equivocado', 'datos_insuficientes',
 }
 
 
@@ -101,6 +126,13 @@ def list_ghost_leads(
     if only_advisor_fault:
         where.append("co.perdido_por LIKE 'asesor_%%'")
 
+    # Ghost score: si la columna no existe aún (migración 008 no corrida)
+    # usamos un NULL literal para no crashear el endpoint. El ordenamiento
+    # cae a los tiebreakers tradicionales.
+    has_ghost = _ghost_score_column_exists()
+    ghost_select = "co.ghost_score" if has_ghost else "NULL::int AS ghost_score"
+    ghost_order = "co.ghost_score DESC NULLS LAST," if has_ghost else ""
+
     where_sql = " AND ".join(where)
     sql = f"""
         SELECT
@@ -133,7 +165,7 @@ def list_ghost_leads(
           co.recovery_message_suggestion,
           co.next_concrete_action,
           co.alternative_product,
-          co.ghost_score,
+          {ghost_select},
           to_char(l.last_contact_at AT TIME ZONE 'UTC',
                   'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_contact_at,
           EXTRACT(EPOCH FROM (NOW() - l.last_contact_at))::int / 86400 AS days_since_contact
@@ -148,7 +180,7 @@ def list_ghost_leads(
           -- 1) Ghost score ponderado DESC (señal compuesta: intent +
           --    urgencia + presupuesto + recencia + culpa asesor). Leads
           --    sin ghost_score (análisis viejo) caen al final.
-          co.ghost_score DESC NULLS LAST,
+          {ghost_order}
           -- 2) Marcados recuperables van antes que los que no
           CASE WHEN co.is_recoverable = TRUE THEN 0 ELSE 1 END,
           -- 3) Culpa del asesor (fáciles de resucitar) antes

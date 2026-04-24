@@ -502,9 +502,22 @@ class ClaudeClient:
             self.triage_in += in_tok
             self.triage_out += out_tok
 
-        # Defensive: parseamos la respuesta. Puede venir con punto o prefijo.
-        for valid in ("spam", "numero_equivocado", "datos_insuficientes", "analizable"):
-            if valid in text:
+        # Defensive: parseamos la respuesta. Orden crítico: buscamos
+        # "analizable" PRIMERO porque Haiku a veces responde con
+        # oraciones negativas tipo "no es spam, es analizable" —
+        # substring-matching con spam primero daría un falso positivo.
+        # Si queda duda, siempre preferimos "analizable" (no perder leads).
+        #
+        # Además usamos regex con word boundary para evitar matches
+        # espurios tipo "datos_insuficientes_para..." matchee algo más.
+        import re as _re
+        def _has_word(needle: str) -> bool:
+            return bool(_re.search(rf"\b{_re.escape(needle)}\b", text))
+
+        if _has_word("analizable"):
+            return "analizable", cost
+        for valid in ("numero_equivocado", "datos_insuficientes", "spam"):
+            if _has_word(valid):
                 return valid, cost
         # Si el modelo devolvió algo raro, escalamos por seguridad.
         log.warning("triage respuesta inesperada %r → analizable", text[:50])
@@ -648,8 +661,15 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
     # Si el chat es spam / número equivocado / datos insuficientes, lo
     # resolvemos con Haiku (1/15 del costo de Sonnet) y salimos.
     # Solo los "analizables" escalan a Sonnet.
+    #
+    # OPTIMIZACIÓN: en retries (analysis_retry_count > 0) NO re-triageamos.
+    # Si el lead ya llegó a Sonnet en el primer intento, sabemos que
+    # verdict fue "analizable" (sino write_triage_verdict lo habría
+    # cerrado). Evita cobrar Haiku múltiples veces en outages de Anthropic.
     triage_cost = 0.0
-    if TWO_PASS_ENABLED:
+    retry_count = int(lead.get("analysis_retry_count") or 0)
+    should_triage = TWO_PASS_ENABLED and retry_count == 0
+    if should_triage:
         try:
             verdict, triage_cost = client.triage(transcript)
         except Exception as e:
@@ -659,14 +679,16 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
 
         if verdict in TRIAGE_TERMINAL_STATES:
             # Cerrar el análisis directamente — no vale la pena Sonnet.
+            # write_triage_verdict es ATÓMICO (única transacción):
+            # actualiza leads + outcomes + summaries + history de un solo
+            # commit, así no quedan filas 'processing' huérfanas si falla.
             log.info("lead %s → %s (triage Haiku, costo $%.6f)",
                      lead_id, verdict, triage_cost)
-            db.mark_history_processing(lead_id)
             db.write_triage_verdict(
                 lead_id, conversation_id, verdict,
                 f"Clasificado como {verdict} por triage. {_short_summary(transcript)}",
+                CHEAP_MODEL, triage_cost,
             )
-            db.mark_history_completed(lead_id, CHEAP_MODEL, triage_cost)
             return True, triage_cost
 
     # Promover a 'processing' JUSTO antes de la llamada a Claude. Así si

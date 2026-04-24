@@ -212,7 +212,10 @@ export default function GhostsPage() {
                         <span className="font-semibold text-slate-900 text-lg">
                           {displayName(l)}
                         </span>
-                        {l.ghost_score != null && (
+                        {/* Ghost score solo se muestra si > 0. Un 0 significa
+                            lead ya cerrado/descalificado (no debería aparecer
+                            acá) — mejor ocultar que confundir con "🎯 0". */}
+                        {l.ghost_score != null && (l.ghost_score as number) > 0 && (
                           <span
                             className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded font-semibold ${
                               (l.ghost_score as number) >= 70 ? 'bg-emerald-100 text-emerald-800' :

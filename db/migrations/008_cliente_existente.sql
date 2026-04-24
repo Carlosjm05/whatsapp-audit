@@ -47,4 +47,7 @@ ALTER TABLE conversation_outcomes
 CREATE INDEX IF NOT EXISTS idx_outcomes_ghost_score
     ON conversation_outcomes(ghost_score DESC NULLS LAST);
 
-COMMIT;
+-- (Sin COMMIT suelto. psql en modo default aplica auto-commit por
+-- statement; si alguien corre este archivo dentro de `psql -1` o
+-- envuelve en BEGIN, el COMMIT prematuro terminaba la transacción a
+-- destiempo.)

@@ -22,6 +22,9 @@ export interface GhostLead {
   followup_compliance?: boolean | null;
   overall_score?: number | string | null;
   intent_score?: number | string;
+  // Score ponderado 0-100 (compute_ghost_score). Null para leads
+  // analizados antes de la feature.
+  ghost_score?: number | null;
   urgency?: string;
   budget_estimated_cop?: number | string;
   budget_range?: string;

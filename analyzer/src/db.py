@@ -233,6 +233,7 @@ def fetch_pending_leads(limit: Optional[int] = None) -> List[Dict[str, Any]]:
            l.conversation_id,
            l.phone,
            l.whatsapp_name,
+           COALESCE(l.analysis_retry_count, 0) AS analysis_retry_count,
            ut.full_transcript,
            ut.word_count,
            rc.first_message_at,
@@ -284,42 +285,85 @@ def get_retry_count(lead_id: str) -> int:
 
 
 def write_triage_verdict(lead_id: str, conversation_id: str, verdict: str,
-                         summary_text: str) -> None:
-    """Escribe el resultado del triage de Haiku directamente. Usado en
-    two-pass cuando Haiku clasifica como spam/numero_equivocado (Sonnet
-    no aporta nada). Mantiene leads.analysis_status = 'insufficient_data'
-    para que /ghosts y /overview los excluyan correctamente."""
+                         summary_text: str, model_used: str,
+                         cost_usd: float) -> None:
+    """Escribe el resultado del triage de Haiku ATÓMICAMENTE.
+
+    Una única transacción cubre:
+      - update leads.analysis_status
+      - rewrite conversation_summaries (UNIQUE lead_id)
+      - rewrite conversation_outcomes  (UNIQUE lead_id)
+      - lead_analysis_history: promote pending→processing (si existe),
+        luego completed. Si no existe fila pending, crea una directamente
+        como completed para no dejar zombies.
+
+    Así si la transacción falla, NINGÚN paso queda aplicado — no hay
+    estado intermedio para limpiar.
+    """
     valid = {"spam", "numero_equivocado", "datos_insuficientes"}
     if verdict not in valid:
         raise ValueError(f"verdict inválido: {verdict}")
-    with cursor() as cur:
-        cur.execute(
-            """UPDATE leads SET
-                 analysis_status='insufficient_data',
-                 datos_insuficientes=true,
-                 analyzed_at=NOW(),
-                 updated_at=NOW()
-               WHERE id=%s""",
-            (lead_id,),
-        )
-        cur.execute("DELETE FROM conversation_summaries WHERE lead_id=%s", (lead_id,))
-        cur.execute(
-            """INSERT INTO conversation_summaries
-                 (lead_id, conversation_id, summary_text, key_takeaways)
-               VALUES (%s, %s, %s, %s)""",
-            (lead_id, conversation_id, summary_text[:1000], []),
-        )
-        # También escribir conversation_outcomes con el status correcto,
-        # para que el dashboard muestre "spam"/"numero_equivocado" en el
-        # distribution por estado.
-        cur.execute("DELETE FROM conversation_outcomes WHERE lead_id=%s", (lead_id,))
-        cur.execute(
-            """INSERT INTO conversation_outcomes
-                 (lead_id, final_status, is_recoverable,
-                  recovery_probability, recovery_priority, perdido_por)
-               VALUES (%s, %s, FALSE, 'no_aplica', 'no_aplica', 'no_aplica')""",
-            (lead_id, verdict),
-        )
+
+    with get_conn() as conn:
+        try:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            # 1) leads
+            cur.execute(
+                """UPDATE leads SET
+                     analysis_status='insufficient_data',
+                     datos_insuficientes=true,
+                     analyzed_at=NOW(),
+                     updated_at=NOW()
+                   WHERE id=%s""",
+                (lead_id,),
+            )
+            # 2) conversation_summaries (UNIQUE lead_id → delete+insert)
+            cur.execute("DELETE FROM conversation_summaries WHERE lead_id=%s", (lead_id,))
+            cur.execute(
+                """INSERT INTO conversation_summaries
+                     (lead_id, conversation_id, summary_text, key_takeaways)
+                   VALUES (%s, %s, %s, %s)""",
+                (lead_id, conversation_id, summary_text[:1000], []),
+            )
+            # 3) conversation_outcomes (UNIQUE lead_id → delete+insert)
+            cur.execute("DELETE FROM conversation_outcomes WHERE lead_id=%s", (lead_id,))
+            cur.execute(
+                """INSERT INTO conversation_outcomes
+                     (lead_id, final_status, is_recoverable,
+                      recovery_probability, recovery_priority, perdido_por,
+                      ghost_score)
+                   VALUES (%s, %s, FALSE, 'no_aplica', 'no_aplica', 'no_aplica', 0)""",
+                (lead_id, verdict),
+            )
+            # 4) lead_analysis_history: promover pending a completed, o
+            # insertar directo como completed si no existía.
+            cur.execute(
+                """UPDATE lead_analysis_history
+                     SET status='completed',
+                         completed_at=NOW(),
+                         model_used=%s,
+                         cost_usd=%s
+                   WHERE id = (
+                     SELECT id FROM lead_analysis_history
+                      WHERE lead_id=%s AND status IN ('pending','processing')
+                      ORDER BY started_at DESC
+                      LIMIT 1
+                   )
+                   RETURNING id""",
+                (model_used, cost_usd, lead_id),
+            )
+            if cur.rowcount == 0:
+                cur.execute(
+                    """INSERT INTO lead_analysis_history
+                         (lead_id, triggered_by, status, model_used,
+                          cost_usd, started_at, completed_at)
+                       VALUES (%s, 'triage', 'completed', %s, %s, NOW(), NOW())""",
+                    (lead_id, model_used, cost_usd),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def get_lead_history_by_phone(phone: str, exclude_lead_id: str) -> List[Dict[str, Any]]:
