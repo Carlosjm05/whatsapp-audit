@@ -6,6 +6,8 @@ Endpoints:
   GET  /api/qr/share              → admin (JWT). Lista tokens activos.
   POST /api/qr/share/{token}/revoke → admin (JWT). Revoca un token.
   GET  /api/qr/public/{token}     → SIN auth. Para que el cliente vea el QR.
+                                    Rate-limited a 30/min por IP para evitar
+                                    enumeración de tokens.
 
 Las claves Redis las publica el extractor (extractor/src/status-publisher.js):
   wa:qr, wa:qr_ts, wa:status, wa:status_ts, wa:last_activity, wa:connected_at
@@ -18,11 +20,12 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from ..auth import get_current_user
 from ..db import execute, fetch_all, fetch_one
+from ..ratelimit import limiter
 from ..redis_client import safe_get
 
 log = logging.getLogger(__name__)
@@ -179,14 +182,19 @@ def revoke_share_token(
 
 # ─── Endpoint público (sin auth) ────────────────────────────
 @router.get("/public/{token}")
-def get_qr_public(token: str) -> dict:
+@limiter.limit("30/minute")
+def get_qr_public(request: Request, token: str) -> dict:
     """Vista pública para el cliente. Solo expone el QR + status mínimo.
 
     Validación: token debe existir, no estar revocado, no estar usado,
     y no estar expirado.
+
+    Marca el token como `used_at` la PRIMERA vez que se sirve un QR
+    válido — eso evita race conditions con `/escanear` accedido desde
+    múltiples pestañas y garantiza el comportamiento "single-use".
     """
     row = fetch_one(
-        """SELECT token, expires_at, used_at, revoked_at, note
+        """SELECT token, expires_at, used_at, revoked_at, note, created_at
              FROM qr_share_tokens
             WHERE token = %s""",
         [token],
@@ -196,33 +204,37 @@ def get_qr_public(token: str) -> dict:
     if row["revoked_at"] is not None:
         raise HTTPException(status_code=410, detail="Link revocado")
     if row["used_at"] is not None:
+        # Si ya está marcado como usado, dejamos consultar el status
+        # actual SOLO si la sesión sigue conectada (para que el
+        # cliente que ya escaneó vea "conectado"). Si está
+        # desconectado nuevamente, devolvemos 410.
+        state_used = _read_status()
+        if state_used.status == "connected":
+            return {
+                "status": state_used.status,
+                "qr_data_url": None,
+                "qr_emitted_at": None,
+                "connected_at": state_used.connected_at,
+                "expires_at": row["expires_at"].isoformat(),
+                "note": row.get("note"),
+            }
         raise HTTPException(status_code=410, detail="Link ya utilizado")
     if row["expires_at"] <= datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="Link expirado")
 
     state = _read_status()
 
-    # Si el extractor ya está conectado, marcamos el token como "usado"
-    # para invalidarlo automáticamente y devolvemos un mensaje de éxito
-    # sin exponer el QR (que ya es viejo).
-    if state.status == "connected" and state.connected_at:
-        # Heurística: si la conexión es POSTERIOR a la creación del token,
-        # probablemente fue ESTE escaneo. Lo marcamos como usado.
-        try:
-            connected_dt = datetime.fromisoformat(state.connected_at.replace("Z", "+00:00"))
-            # row['created_at'] ya viene tz-aware del psycopg2 con TZ
-            # Buscamos created_at:
-            t2 = fetch_one(
-                "SELECT created_at FROM qr_share_tokens WHERE token = %s",
-                [token],
-            )
-            if t2 and connected_dt > t2["created_at"]:
-                execute(
-                    "UPDATE qr_share_tokens SET used_at = NOW() WHERE token = %s AND used_at IS NULL",
-                    [token],
-                )
-        except Exception as e:
-            log.debug("no se pudo marcar token como used: %s", e)
+    # Single-use: marcar `used_at` la primera vez que servimos el QR
+    # exitosamente. Atómico (UPDATE WHERE used_at IS NULL — si dos
+    # requests llegan al mismo tiempo, solo una update va a tener éxito).
+    if state.qr_data_url and state.status == "qr_ready":
+        execute(
+            """UPDATE qr_share_tokens
+                  SET used_at = NOW()
+                WHERE token = %s
+                  AND used_at IS NULL""",
+            [token],
+        )
 
     return {
         "status": state.status,

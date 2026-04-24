@@ -33,22 +33,35 @@ def _safe_float(v) -> float:
 
 @router.get("/summary")
 def cost_summary(_user: str = Depends(get_current_user)) -> dict:
-    """Totales gastados por bucket temporal, separados por servicio."""
+    """Totales gastados por bucket temporal, separados por servicio.
+
+    Importante: hoy/semana/mes se calculan en zona horaria de Colombia
+    (America/Bogota) — la DB corre en UTC. Sin la conversión, "hoy"
+    terminaba a las 19:00 hora Colombia y los gastos de la noche caían
+    al día siguiente."""
+    # Convertir TIMESTAMPTZ → timestamp local Colombia, después comparar
+    # contra CURRENT_DATE en la misma timezone.
     sql = """
     WITH whisper AS (
       SELECT
-        SUM(cost_usd) FILTER (WHERE processed_at::date = CURRENT_DATE)                               AS hoy,
-        SUM(cost_usd) FILTER (WHERE processed_at >= date_trunc('week',  CURRENT_DATE))               AS semana,
-        SUM(cost_usd) FILTER (WHERE processed_at >= date_trunc('month', CURRENT_DATE))               AS mes,
+        SUM(cost_usd) FILTER (WHERE (processed_at AT TIME ZONE 'America/Bogota')::date
+                                  = (NOW() AT TIME ZONE 'America/Bogota')::date)                    AS hoy,
+        SUM(cost_usd) FILTER (WHERE (processed_at AT TIME ZONE 'America/Bogota')
+                                  >= date_trunc('week',  (NOW() AT TIME ZONE 'America/Bogota')))    AS semana,
+        SUM(cost_usd) FILTER (WHERE (processed_at AT TIME ZONE 'America/Bogota')
+                                  >= date_trunc('month', (NOW() AT TIME ZONE 'America/Bogota')))    AS mes,
         SUM(cost_usd)                                                                                 AS total
       FROM transcriptions
      WHERE status = 'completed'
     ),
     claude AS (
       SELECT
-        SUM(cost_usd) FILTER (WHERE completed_at::date = CURRENT_DATE)                               AS hoy,
-        SUM(cost_usd) FILTER (WHERE completed_at >= date_trunc('week',  CURRENT_DATE))               AS semana,
-        SUM(cost_usd) FILTER (WHERE completed_at >= date_trunc('month', CURRENT_DATE))               AS mes,
+        SUM(cost_usd) FILTER (WHERE (completed_at AT TIME ZONE 'America/Bogota')::date
+                                  = (NOW() AT TIME ZONE 'America/Bogota')::date)                    AS hoy,
+        SUM(cost_usd) FILTER (WHERE (completed_at AT TIME ZONE 'America/Bogota')
+                                  >= date_trunc('week',  (NOW() AT TIME ZONE 'America/Bogota')))    AS semana,
+        SUM(cost_usd) FILTER (WHERE (completed_at AT TIME ZONE 'America/Bogota')
+                                  >= date_trunc('month', (NOW() AT TIME ZONE 'America/Bogota')))    AS mes,
         SUM(cost_usd)                                                                                 AS total
       FROM lead_analysis_history
      WHERE status = 'completed'
@@ -88,23 +101,27 @@ def cost_daily(
     """Serie diaria de costos (whisper + claude) para chart."""
     sql = """
     WITH whisper AS (
-      SELECT processed_at::date AS day, SUM(cost_usd) AS amount
+      SELECT (processed_at AT TIME ZONE 'America/Bogota')::date AS day,
+             SUM(cost_usd) AS amount
         FROM transcriptions
        WHERE status = 'completed'
-         AND processed_at >= CURRENT_DATE - (%s::int - 1)
+         AND (processed_at AT TIME ZONE 'America/Bogota')::date
+             >= (NOW() AT TIME ZONE 'America/Bogota')::date - (%s::int - 1)
        GROUP BY 1
     ),
     claude AS (
-      SELECT completed_at::date AS day, SUM(cost_usd) AS amount
+      SELECT (completed_at AT TIME ZONE 'America/Bogota')::date AS day,
+             SUM(cost_usd) AS amount
         FROM lead_analysis_history
        WHERE status = 'completed'
-         AND completed_at >= CURRENT_DATE - (%s::int - 1)
+         AND (completed_at AT TIME ZONE 'America/Bogota')::date
+             >= (NOW() AT TIME ZONE 'America/Bogota')::date - (%s::int - 1)
        GROUP BY 1
     ),
     days AS (
       SELECT generate_series(
-               CURRENT_DATE - (%s::int - 1),
-               CURRENT_DATE,
+               (NOW() AT TIME ZONE 'America/Bogota')::date - (%s::int - 1),
+               (NOW() AT TIME ZONE 'America/Bogota')::date,
                '1 day'::interval
              )::date AS day
     )

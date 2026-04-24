@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 import psycopg2
 import psycopg2.extras
+from psycopg2 import pool as pg_pool
+
+log = logging.getLogger(__name__)
 
 # Enums compartidos con validator.py — única fuente de verdad.
 from .enums import (
@@ -53,13 +57,51 @@ def _conn_params() -> Dict[str, Any]:
     }
 
 
+_pool: Optional[pg_pool.ThreadedConnectionPool] = None
+
+
+def _init_pool() -> pg_pool.ThreadedConnectionPool:
+    """Crea (idempotente) el pool. Tamaños conservadores para el daemon
+    que típicamente trabaja con 1-3 leads en paralelo."""
+    global _pool
+    if _pool is not None:
+        return _pool
+    minconn = int(os.getenv("DB_POOL_MIN", "1"))
+    maxconn = int(os.getenv("DB_POOL_MAX", "5"))
+    _pool = pg_pool.ThreadedConnectionPool(
+        minconn=minconn,
+        maxconn=maxconn,
+        **_conn_params(),
+    )
+    log.info("Postgres pool listo (analyzer): min=%d max=%d", minconn, maxconn)
+    return _pool
+
+
+def close_pool() -> None:
+    """Llamado al shutdown (signal handler). Libera todas las conexiones."""
+    global _pool
+    if _pool is not None:
+        try:
+            _pool.closeall()
+        except Exception:
+            pass
+        _pool = None
+
+
 @contextmanager
 def get_conn() -> Iterator[psycopg2.extensions.connection]:
-    conn = psycopg2.connect(**_conn_params())
+    p = _init_pool()
+    conn = p.getconn()
     try:
         yield conn
     finally:
-        conn.close()
+        # Devolver al pool (no cerrar) — resetear estado de transacción.
+        try:
+            if conn.status != psycopg2.extensions.STATUS_READY:
+                conn.rollback()
+        except Exception:
+            pass
+        p.putconn(conn)
 
 
 @contextmanager

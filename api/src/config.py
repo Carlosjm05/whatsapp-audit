@@ -46,18 +46,28 @@ class Settings:
         self._validate()
 
     def _validate(self) -> None:
-        # Solo fallamos si el flag explícito lo pide (prod). En dev permitimos
-        # los defaults para agilizar el desarrollo local.
-        strict = os.getenv("STRICT_CONFIG", "false").lower() in {"1", "true", "yes"}
+        # Default: STRICT activado si hay DOMAIN o STRICT_CONFIG explícito.
+        # Sin DOMAIN asumimos dev local y permitimos defaults para agilizar.
+        # En prod (DOMAIN seteado) NO podemos arrancar con secretos por
+        # defecto — el JWT sería trivial de comprometer.
+        strict_explicit = os.getenv("STRICT_CONFIG", "").lower() in {"1", "true", "yes"}
+        looks_like_prod = bool(self.domain)
+        strict = strict_explicit or looks_like_prod
+        # Excepción: STRICT_CONFIG=false explícito gana (override emergencia).
+        if os.getenv("STRICT_CONFIG", "").lower() in {"0", "false", "no"}:
+            strict = False
+
         if strict:
             if self.jwt_secret in {"", "change-me-in-prod"} or len(self.jwt_secret) < 32:
                 raise RuntimeError(
-                    "JWT_SECRET invalido o demasiado corto. Configura un secreto "
-                    "fuerte (>= 32 chars) via variable de entorno."
+                    "JWT_SECRET invalido o demasiado corto. En produccion (DOMAIN "
+                    "seteado o STRICT_CONFIG=true) debe ser >= 32 chars y distinto "
+                    "del default. Genera uno con: openssl rand -hex 64"
                 )
             if not self.admin_user or not self.admin_password:
                 raise RuntimeError(
-                    "ADMIN_USER y ADMIN_PASSWORD son obligatorios en modo STRICT."
+                    "ADMIN_USER y ADMIN_PASSWORD son obligatorios en produccion. "
+                    "Si querés saltar este check, exportá STRICT_CONFIG=false."
                 )
 
     @property

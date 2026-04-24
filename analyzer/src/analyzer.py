@@ -434,15 +434,27 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
     # Errores de red/API de Anthropic: retriables (volverá como pending).
     # Errores de parseo/validación: NO retriables (se marca failed directo
     # porque reintentar sin cambios va a dar el mismo error y cuesta $$).
+    #
+    # IMPORTANTE: errores TRANSITORIOS de la API de Anthropic (5xx,
+    # connection, timeout) NO incrementan retry_count — un outage de 30
+    # min de Anthropic no debería "quemar" a todos los pending mandándolos
+    # a failed. Solo RateLimitError sí cuenta porque puede ser por culpa
+    # nuestra (mucho throughput).
     try:
         raw, cost = client.analyze(transcript, hints)
     except (
         anthropic.APIConnectionError,
         anthropic.APITimeoutError,
-        anthropic.RateLimitError,
         anthropic.InternalServerError,
-        RetryError,
     ) as e:
+        # Transitorios → pending sin incrementar retry. El daemon vuelve
+        # a intentar en la próxima vuelta (poll); cuando Anthropic vuelva,
+        # el lead se procesa normal sin perder oportunidad.
+        db.mark_status(lead_id, "pending", error=f"transitorio: {str(e)[:300]}")
+        log.warning("lead %s error transitorio de API (no cuenta retry): %s",
+                    lead_id, e)
+        return False, 0.0
+    except (anthropic.RateLimitError, RetryError) as e:
         rc = db.get_retry_count(lead_id) + 1
         status = "failed" if rc >= MAX_RETRIES else "pending"
         db.mark_status(lead_id, status, retry_count=rc, error=str(e)[:500])

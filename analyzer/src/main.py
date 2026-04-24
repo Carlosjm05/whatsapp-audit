@@ -130,15 +130,24 @@ def main(argv=None) -> int:
     _setup_logging()
     _install_signal_handlers()
     args = build_parser().parse_args(argv)
-    if args.mode == "analyze":
-        return cmd_analyze(args)
-    if args.mode == "daemon":
-        return cmd_daemon(args)
-    if args.mode == "stats":
-        return cmd_stats(args)
-    if args.mode == "kb":
-        return cmd_kb(args)
-    return 2
+    try:
+        if args.mode == "analyze":
+            return cmd_analyze(args)
+        if args.mode == "daemon":
+            return cmd_daemon(args)
+        if args.mode == "stats":
+            return cmd_stats(args)
+        if args.mode == "kb":
+            return cmd_kb(args)
+        return 2
+    finally:
+        # Cerrar el pool de DB al salir — evita warnings de leak en logs
+        # de Postgres cuando el container muere por SIGTERM.
+        from . import db as _db
+        try:
+            _db.close_pool()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

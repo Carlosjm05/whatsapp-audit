@@ -92,6 +92,23 @@ CREATE INDEX idx_dapta_project ON dapta_knowledge_base(related_project);
 CREATE INDEX idx_lah_lead_id ON lead_analysis_history(lead_id);
 CREATE INDEX idx_lah_started_at ON lead_analysis_history(started_at DESC);
 CREATE INDEX idx_lah_status ON lead_analysis_history(status);
+-- Compuestos para mark_history_*  (filtran por lead_id+status, ordenan por started_at).
+CREATE INDEX idx_lah_lead_status_started ON lead_analysis_history(lead_id, status, started_at DESC);
+CREATE INDEX idx_lah_lead_started ON lead_analysis_history(lead_id, started_at DESC);
+-- Cost queries (filtran por status='completed' + completed_at).
+CREATE INDEX idx_lah_completed_at
+    ON lead_analysis_history(completed_at)
+    WHERE status = 'completed';
+
+-- transcriptions: cost queries (mismo patrón).
+CREATE INDEX idx_transcriptions_completed_at
+    ON transcriptions(processed_at)
+    WHERE status = 'completed';
+
+-- qr_share_tokens: index parcial para listado de tokens activos.
+CREATE INDEX idx_qr_tokens_active
+    ON qr_share_tokens(expires_at)
+    WHERE revoked_at IS NULL AND used_at IS NULL;
 
 -- Índice de texto completo para búsqueda en transcripciones
 CREATE INDEX idx_transcriptions_text_search ON transcriptions USING gin(to_tsvector('spanish', COALESCE(transcription_text, '')));

@@ -100,6 +100,19 @@ def _fetch_messages(conversation_id: str) -> List[ParsedMsg]:
 
 
 def _recompute_one(lead_id: str, conversation_id: str) -> bool:
+    """Recomputa response_times de UN lead, atómicamente.
+
+    Usa pg_advisory_xact_lock para evitar race con `analyzer daemon` que
+    pueda estar reanalizando el mismo lead via Claude. Si el daemon ya
+    tomó el lock, este worker pasa de largo (returna False) y el operador
+    puede re-correr el script — el daemon habrá dejado response_times ya
+    calculado con la lógica nueva (también pasa por business_hours).
+
+    UPDATE ... RETURNING para preservar los flags de Claude
+    (unanswered_messages_count, lead_had_to_repeat, repeat_count) sin
+    leerlos primero — esto evita el bug original donde si la fila no
+    existía resetábamos todo a 0/false.
+    """
     msgs = _fetch_messages(conversation_id)
     if not msgs:
         log.info("lead %s sin mensajes — skip", lead_id)
@@ -107,39 +120,67 @@ def _recompute_one(lead_id: str, conversation_id: str) -> bool:
 
     metrics = compute_metrics_from_msgs(msgs)
 
-    # Preservamos los flags que Claude llenó (lead_had_to_repeat, etc.) — solo
-    # recalculamos los tiempos.
-    existing = _query_one(
-        """SELECT unanswered_messages_count, lead_had_to_repeat, repeat_count
-             FROM response_times
-            WHERE lead_id = %s::uuid""",
-        [lead_id],
-    ) or {}
+    with _db.cursor() as cur:
+        # pg_try_advisory_xact_lock devuelve true si pudo tomar el lock,
+        # false si otra transacción ya lo tiene. Hash del UUID a int8.
+        cur.execute(
+            "SELECT pg_try_advisory_xact_lock(hashtext(%s)::bigint)",
+            (lead_id,),
+        )
+        got_lock = cur.fetchone()
+        if not got_lock or not got_lock[0]:
+            log.warning("lead %s tiene lock activo (analyzer corriendo?) — skip",
+                        lead_id)
+            return False
 
-    _exec("DELETE FROM response_times WHERE lead_id = %s::uuid", [lead_id])
-    _exec(
-        """INSERT INTO response_times
-             (lead_id, first_response_minutes, avg_response_minutes,
-              longest_gap_hours, unanswered_messages_count,
-              lead_had_to_repeat, repeat_count,
-              advisor_active_hours, response_time_category,
-              sunday_avg_minutes, sunday_response_count)
-           VALUES (%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-        [
-            lead_id,
-            metrics.get("first_response_minutes"),
-            metrics.get("avg_response_minutes"),
-            metrics.get("longest_gap_hours"),
-            int(existing.get("unanswered_messages_count") or 0),
-            bool(existing.get("lead_had_to_repeat") or False),
-            int(existing.get("repeat_count") or 0),
-            metrics.get("advisor_active_hours"),
-            metrics.get("response_time_category"),
-            metrics.get("sunday_response_minutes_avg"),
-            int(metrics.get("sunday_response_count") or 0),
-        ],
-    )
-    return True
+        # UPDATE primero — si existe la fila, preservamos los flags de Claude.
+        cur.execute(
+            """UPDATE response_times
+                  SET first_response_minutes = %s,
+                      avg_response_minutes   = %s,
+                      longest_gap_hours      = %s,
+                      advisor_active_hours   = %s,
+                      response_time_category = %s,
+                      sunday_avg_minutes     = %s,
+                      sunday_response_count  = %s
+                WHERE lead_id = %s::uuid""",
+            (
+                metrics.get("first_response_minutes"),
+                metrics.get("avg_response_minutes"),
+                metrics.get("longest_gap_hours"),
+                metrics.get("advisor_active_hours"),
+                metrics.get("response_time_category"),
+                metrics.get("sunday_response_minutes_avg"),
+                int(metrics.get("sunday_response_count") or 0),
+                lead_id,
+            ),
+        )
+        if cur.rowcount > 0:
+            return True
+
+        # No existía → INSERT (los flags de Claude se inicializan en defaults
+        # porque no tenemos info — esto solo pasa para leads recien analizados
+        # entre el listado y el recompute, caso raro).
+        cur.execute(
+            """INSERT INTO response_times
+                 (lead_id, first_response_minutes, avg_response_minutes,
+                  longest_gap_hours, unanswered_messages_count,
+                  lead_had_to_repeat, repeat_count,
+                  advisor_active_hours, response_time_category,
+                  sunday_avg_minutes, sunday_response_count)
+               VALUES (%s::uuid,%s,%s,%s,0,FALSE,0,%s,%s,%s,%s)""",
+            (
+                lead_id,
+                metrics.get("first_response_minutes"),
+                metrics.get("avg_response_minutes"),
+                metrics.get("longest_gap_hours"),
+                metrics.get("advisor_active_hours"),
+                metrics.get("response_time_category"),
+                metrics.get("sunday_response_minutes_avg"),
+                int(metrics.get("sunday_response_count") or 0),
+            ),
+        )
+        return True
 
 
 def main(argv=None) -> int:

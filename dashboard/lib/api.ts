@@ -22,6 +22,24 @@ export class ApiError extends Error {
 
 type FetchOpts = RequestInit & { skipAuth?: boolean };
 
+// Guard contra múltiples llamadas a logout() simultáneas. Sidebar +
+// StatusIndicator + ConexionPage pueden pollear en paralelo y disparar
+// 401 al mismo tiempo cuando expira el JWT. Sin este guard el browser
+// hace múltiples redirects y borra el token en race.
+let _logoutInFlight = false;
+
+function _handle401() {
+  if (_logoutInFlight) return;
+  if (typeof window === 'undefined') return;
+  _logoutInFlight = true;
+  // logout() llama router.replace('/login') — pequeño delay para que las
+  // promises pendientes resuelvan/rechacen sin generar warnings de setState
+  // sobre componentes desmontados.
+  setTimeout(() => {
+    try { logout(); } finally { _logoutInFlight = false; }
+  }, 0);
+}
+
 export async function fetchApi<T = unknown>(
   path: string,
   opts: FetchOpts = {}
@@ -43,7 +61,7 @@ export async function fetchApi<T = unknown>(
   }
 
   if (res.status === 401 && !skipAuth) {
-    if (typeof window !== 'undefined') logout();
+    _handle401();
     throw new ApiError('Sesión expirada', 401);
   }
   if (!res.ok) {

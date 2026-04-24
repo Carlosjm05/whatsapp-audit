@@ -69,21 +69,28 @@ export default function EscanearPage() {
     const tick = async () => {
       try {
         const res = await fetchApi<PublicQR>(`/api/qr/public/${token}`, { skipAuth: true });
-        if (!cancelled) {
-          setData(res);
-          setError(null);
+        if (cancelled) return;
+        setData(res);
+        setError(null);
+        // Si ya está conectado, dejamos de pollear — el celular del cliente
+        // no tiene por qué seguir consumiendo batería/datos eternamente.
+        if (res.status === 'connected') {
+          return;
         }
       } catch (err) {
         if (!cancelled) {
           if (err instanceof ApiError) {
             setError({ status: err.status, msg: err.message });
+            // Si el link ya expiró/fue revocado/usado, tampoco seguimos.
+            if (err.status === 410 || err.status === 404) {
+              return;
+            }
           } else {
             setError({ status: 0, msg: 'Sin conexión' });
           }
         }
-      } finally {
-        if (!cancelled) timer = setTimeout(tick, POLL_MS);
       }
+      if (!cancelled) timer = setTimeout(tick, POLL_MS);
     };
     tick();
     return () => {
@@ -92,11 +99,15 @@ export default function EscanearPage() {
     };
   }, [token]);
 
-  // Reloj para countdown
+  // Reloj para countdown — solo mientras el link está activo y no conectado.
   useEffect(() => {
+    if (!data) return;
+    if (data.status === 'connected') return;
+    const expiresAt = new Date(data.expires_at).getTime();
+    if (expiresAt <= Date.now()) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [data]);
 
   // Pantalla de error / link inválido
   if (error && (!data || error.status !== 0)) {

@@ -10,7 +10,9 @@ type HistoryItem = {
   triggered_by: string;
   status: string;
   model_used: string | null;
-  cost_usd: number | null;
+  // Postgres DECIMAL → string en JSON con FastAPI default. Aceptamos
+  // ambos para no romper si el endpoint cambia.
+  cost_usd: number | string | null;
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;
@@ -140,8 +142,8 @@ export default function AnalysisHistoryPanel({ leadId, refreshKey }: { leadId: s
                       {it.triggered_by === 'manual' ? '👤 Manual' : '🤖 Auto'}
                     </span>
                     {it.model_used && <span className="text-[11px] text-slate-500">{it.model_used}</span>}
-                    {it.cost_usd !== null && (
-                      <span className="text-[11px] text-slate-500">${it.cost_usd.toFixed(4)}</span>
+                    {it.cost_usd !== null && it.cost_usd !== undefined && (
+                      <span className="text-[11px] text-slate-500">${Number(it.cost_usd).toFixed(4)}</span>
                     )}
                     {isLatest && (
                       <span className="ml-auto inline-flex items-center gap-1 text-[10px] uppercase tracking-wide bg-emerald-100 text-emerald-700 rounded px-1.5 py-0.5 font-semibold">

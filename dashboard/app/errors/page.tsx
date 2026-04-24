@@ -112,11 +112,11 @@ export default function ErrorsPage() {
             <KpiCard
               label="% sin seguimiento"
               value={
-                pctNoFollowup != null ? `${pctNoFollowup.toFixed(1)}%` : '—'
+                pctNoFollowup != null ? `${toNum(pctNoFollowup).toFixed(1)}%` : '—'
               }
               sub="Leads sin mensaje de seguimiento"
               icon={<Flame className="w-5 h-5" />}
-              tone={pctNoFollowup != null && pctNoFollowup > 30 ? 'danger' : 'warning'}
+              tone={pctNoFollowup != null && toNum(pctNoFollowup) > 30 ? 'danger' : 'warning'}
             />
             <KpiCard
               label="Brecha máxima prom."

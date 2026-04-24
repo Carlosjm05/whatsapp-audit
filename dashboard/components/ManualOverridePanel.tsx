@@ -55,9 +55,26 @@ export default function ManualOverridePanel(props: Props) {
   const [error, setError] = useState<string | null>(null);
   const [savedToast, setSavedToast] = useState(false);
 
-  const hasOverride = !!(initialStatus || initialIsRecoverable !== null && initialIsRecoverable !== undefined || initialNotes);
+  // Paréntesis explícitos para legibilidad — antes era ambiguo y dependía
+  // de precedencia de operadores.
+  const hasOverride = !!(
+    initialStatus ||
+    (initialIsRecoverable !== null && initialIsRecoverable !== undefined) ||
+    initialNotes
+  );
 
   const save = async () => {
+    // Validación: rechazar guardado completamente vacío cuando no hay
+    // override previo. Antes el backend hacía COALESCE y devolvía OK
+    // sin modificar nada → toast mentía con "Guardado".
+    const allEmpty =
+      !status &&
+      isRecoverable === '' &&
+      !notes.trim();
+    if (allEmpty && !hasOverride) {
+      setError('Marcá al menos un campo para guardar el override.');
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
