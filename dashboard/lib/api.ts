@@ -90,7 +90,9 @@ export async function fetchBlob(path: string): Promise<Blob> {
   const url = path.startsWith('http') ? path : `${API_URL}${path}`;
   const res = await fetch(url, { headers: h });
   if (res.status === 401) {
-    logout();
+    // Usar el mismo guard single-flight que fetchApi para no disparar
+    // dos logout() simultáneos cuando un download coincide con un poll.
+    _handle401();
     throw new ApiError('Sesión expirada', 401);
   }
   if (!res.ok) throw new ApiError(`Error ${res.status}`, res.status);

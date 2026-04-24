@@ -387,12 +387,10 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
     transcript = lead["full_transcript"] or ""
     word_count = lead.get("word_count") or len(transcript.split())
 
-    # Si fue encolado via POST /reanalyze existe una fila 'pending' en
-    # lead_analysis_history; promoverla a 'processing'. Si no existe
-    # (corrida automática), el UPDATE no toca nada.
-    db.mark_history_processing(lead_id)
-
     if word_count < MIN_WORDS:
+        # Datos insuficientes — promovemos a 'processing' y completamos
+        # directamente (costo 0, sin llamada a Claude).
+        db.mark_history_processing(lead_id)
         log.info("lead %s datos insuficientes (%d palabras)", lead_id, word_count)
         db.write_insufficient(lead_id, conversation_id, _short_summary(transcript))
         db.mark_history_completed(lead_id, CLAUDE_MODEL, 0.0)
@@ -431,6 +429,12 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
     metadata = {"phone": lead["phone"], "whatsapp_name": lead["whatsapp_name"]}
     hints = _format_hints(metadata, computed, transcript)
 
+    # Promover a 'processing' JUSTO antes de la llamada a Claude. Así si
+    # cae un transitorio (5xx, connection, timeout) NO dejamos una fila
+    # 'processing' huérfana en lead_analysis_history — la fila solo se
+    # crea si efectivamente la llamada arrancó y tenemos qué completar.
+    db.mark_history_processing(lead_id)
+
     # Errores de red/API de Anthropic: retriables (volverá como pending).
     # Errores de parseo/validación: NO retriables (se marca failed directo
     # porque reintentar sin cambios va a dar el mismo error y cuesta $$).
@@ -440,6 +444,12 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
     # min de Anthropic no debería "quemar" a todos los pending mandándolos
     # a failed. Solo RateLimitError sí cuenta porque puede ser por culpa
     # nuestra (mucho throughput).
+    # Cap defensivo: si un mismo lead lleva >= TRANSIENT_CAP "transitorios"
+    # en las últimas 24h, probablemente NO es transitorio (API key mala,
+    # cuota agotada, chat que rompe al modelo). Escalar a failed duro para
+    # que no ocupe la cola del daemon eternamente.
+    TRANSIENT_CAP = int(os.getenv("TRANSIENT_CAP_24H", "10"))
+
     try:
         raw, cost = client.analyze(transcript, hints)
     except (
@@ -450,9 +460,28 @@ def process_lead(lead: Dict[str, Any], client: ClaudeClient) -> Tuple[bool, floa
         # Transitorios → pending sin incrementar retry. El daemon vuelve
         # a intentar en la próxima vuelta (poll); cuando Anthropic vuelva,
         # el lead se procesa normal sin perder oportunidad.
+        # Marcamos la fila 'processing' recién creada como 'failed' con
+        # flag transitorio — el próximo ciclo crea otra al invocar
+        # mark_history_processing de nuevo. No acumula zombies.
+        transient_count = db.count_recent_transient_failures(lead_id, hours=24)
+        if transient_count >= TRANSIENT_CAP:
+            # Ya no es transitorio — escalar a failed duro.
+            db.mark_history_failed(
+                lead_id,
+                f"escalado tras {transient_count} transitorios consecutivos: {str(e)[:250]}",
+            )
+            db.mark_status(
+                lead_id, "failed", retry_count=MAX_RETRIES,
+                error=f"transitorios excedieron {TRANSIENT_CAP} en 24h: {str(e)[:300]}",
+            )
+            log.error("lead %s escalado a FAILED tras %d transitorios: %s",
+                      lead_id, transient_count, e)
+            return False, 0.0
+
+        db.mark_history_failed(lead_id, f"transitorio: {str(e)[:300]}")
         db.mark_status(lead_id, "pending", error=f"transitorio: {str(e)[:300]}")
-        log.warning("lead %s error transitorio de API (no cuenta retry): %s",
-                    lead_id, e)
+        log.warning("lead %s error transitorio #%d (no cuenta retry): %s",
+                    lead_id, transient_count + 1, e)
         return False, 0.0
     except (anthropic.RateLimitError, RetryError) as e:
         rc = db.get_retry_count(lead_id) + 1

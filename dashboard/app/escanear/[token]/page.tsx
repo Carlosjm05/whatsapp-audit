@@ -99,15 +99,20 @@ export default function EscanearPage() {
     };
   }, [token]);
 
-  // Reloj para countdown — solo mientras el link está activo y no conectado.
+  // Reloj para countdown — depende SOLO de expires_at + status para no
+  // re-montar el interval en cada tick del polling (data cambia por
+  // referencia cada 3s aunque su contenido sea igual). Antes el
+  // setInterval se destruía/creaba cada 3s → countdown saltaba.
+  const expiresAtStr = data?.expires_at;
+  const statusKey = data?.status;
   useEffect(() => {
-    if (!data) return;
-    if (data.status === 'connected') return;
-    const expiresAt = new Date(data.expires_at).getTime();
+    if (!expiresAtStr) return;
+    if (statusKey === 'connected') return;
+    const expiresAt = new Date(expiresAtStr).getTime();
     if (expiresAt <= Date.now()) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [data]);
+  }, [expiresAtStr, statusKey]);
 
   // Pantalla de error / link inválido
   if (error && (!data || error.status !== 0)) {

@@ -283,6 +283,25 @@ def get_retry_count(lead_id: str) -> int:
         return int(row["rc"]) if row else 0
 
 
+def count_recent_transient_failures(lead_id: str, hours: int = 24) -> int:
+    """Cuenta cuántas entradas de 'failed (transitorio:)' tuvo el lead en
+    las últimas N horas. Si es alto, ya no es transitorio — probablemente
+    la API key está rota, el proyecto sin cuota, o el chat rompe al modelo.
+    El caller debe escalar a 'failed' duro cuando supere un umbral."""
+    with cursor(commit=False) as cur:
+        cur.execute(
+            """SELECT COUNT(*)::int AS c
+                 FROM lead_analysis_history
+                WHERE lead_id = %s
+                  AND status = 'failed'
+                  AND error_message LIKE 'transitorio:%%'
+                  AND started_at >= NOW() - (%s || ' hours')::interval""",
+            (lead_id, hours),
+        )
+        row = cur.fetchone()
+        return int(row["c"]) if row else 0
+
+
 # ─── HISTORIAL DE ANÁLISIS (lead_analysis_history) ────────────
 # El API `/api/leads/{id}/reanalyze` crea una fila 'pending' en esta
 # tabla; el analyzer la promociona a 'processing' al empezar y a

@@ -158,9 +158,10 @@ def _recompute_one(lead_id: str, conversation_id: str) -> bool:
         if cur.rowcount > 0:
             return True
 
-        # No existía → INSERT (los flags de Claude se inicializan en defaults
-        # porque no tenemos info — esto solo pasa para leads recien analizados
-        # entre el listado y el recompute, caso raro).
+        # No existía → INSERT con ON CONFLICT. Ventana estrecha: si el
+        # daemon de análisis commitea la misma fila entre el UPDATE (0 rows)
+        # y este INSERT, evitamos UniqueViolation y quedamos con la versión
+        # del daemon (que es más completa — incluye flags de Claude).
         cur.execute(
             """INSERT INTO response_times
                  (lead_id, first_response_minutes, avg_response_minutes,
@@ -168,7 +169,18 @@ def _recompute_one(lead_id: str, conversation_id: str) -> bool:
                   lead_had_to_repeat, repeat_count,
                   advisor_active_hours, response_time_category,
                   sunday_avg_minutes, sunday_response_count)
-               VALUES (%s::uuid,%s,%s,%s,0,FALSE,0,%s,%s,%s,%s)""",
+               VALUES (%s::uuid,%s,%s,%s,0,FALSE,0,%s,%s,%s,%s)
+               ON CONFLICT (lead_id) DO UPDATE
+                  SET first_response_minutes = EXCLUDED.first_response_minutes,
+                      avg_response_minutes   = EXCLUDED.avg_response_minutes,
+                      longest_gap_hours      = EXCLUDED.longest_gap_hours,
+                      advisor_active_hours   = EXCLUDED.advisor_active_hours,
+                      response_time_category = EXCLUDED.response_time_category,
+                      sunday_avg_minutes     = EXCLUDED.sunday_avg_minutes,
+                      sunday_response_count  = EXCLUDED.sunday_response_count
+                  -- OJO: no tocamos unanswered_messages_count /
+                  -- lead_had_to_repeat / repeat_count para preservar flags
+                  -- que vinieron de Claude.""",
             (
                 lead_id,
                 metrics.get("first_response_minutes"),

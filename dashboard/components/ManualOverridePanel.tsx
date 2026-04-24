@@ -64,15 +64,25 @@ export default function ManualOverridePanel(props: Props) {
   );
 
   const save = async () => {
-    // Validación: rechazar guardado completamente vacío cuando no hay
-    // override previo. Antes el backend hacía COALESCE y devolvía OK
-    // sin modificar nada → toast mentía con "Guardado".
+    // Validación del guardado vacío. El backend usa COALESCE, así que
+    // mandar todos los campos en null NO modifica nada — el toast diría
+    // "Guardado" mintiendo. Dos escenarios:
+    //   - Sin override previo: no hay nada que hacer → error inline.
+    //   - Con override previo: el usuario quizás quiso LIMPIAR → indicar
+    //     que use el botón "Quitar override" (que manda clear=true).
     const allEmpty =
       !status &&
       isRecoverable === '' &&
       !notes.trim();
-    if (allEmpty && !hasOverride) {
-      setError('Marcá al menos un campo para guardar el override.');
+    if (allEmpty) {
+      if (hasOverride) {
+        setError(
+          'Para limpiar el override usá el botón "Quitar override" de la vista normal. ' +
+          'Guardar con todos los campos vacíos no modifica nada.'
+        );
+      } else {
+        setError('Marcá al menos un campo para guardar el override.');
+      }
       return;
     }
     setSaving(true);
