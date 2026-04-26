@@ -34,7 +34,7 @@ def list_advisors(_user: str = Depends(get_current_user)) -> List[dict]:
         SELECT
           advisor_name,
           COUNT(*)::int AS total_leads,
-          COUNT(*) FILTER (WHERE final_status = 'venta_cerrada')::int AS sold,
+          COUNT(*) FILTER (WHERE final_status IN ('venta_cerrada','cliente_existente'))::int AS sold,
           COUNT(*) FILTER (WHERE is_recoverable = TRUE)::int AS recoverable,
           AVG(overall_score)::float AS avg_overall_score,
           AVG(first_response_minutes)::float AS avg_first_response_minutes
@@ -88,7 +88,7 @@ def advisor_patterns(
     A diferencia de `/errors`, que lista errores sueltos, esta vista
     detecta TENDENCIAS basadas en los agregados de sus leads:
     - usa mensajes plantilla con frecuencia
-    - responde tarde (P95 > 10 min SLA)
+    - responde tarde (P95 > 5 min SLA)
     - ignora objeciones (was_resolved=false alto)
     - cierra poco (attempted_close=false alto)
     - trabaja en horarios inusuales (1-5am)
@@ -176,7 +176,7 @@ def advisor_patterns(
     if sla_pct >= 30 and sla_denom > 0:
         patterns.append({
             "type": "respuestas_tardias",
-            "label": "Respuestas tardías (>10 min)",
+            "label": "Respuestas tardías (>5 min)",
             "severity": "high" if sla_pct >= 50 else "medium",
             "evidence": f"{stats.get('sla_viol', 0)} de {sla_denom} leads con SLA evaluado",
             "percent": sla_pct,
@@ -308,7 +308,7 @@ def advisor_detail(name: str, _user: str = Depends(get_current_user)) -> dict:
         SELECT
           ascr.advisor_name,
           COUNT(*)::int AS total_leads,
-          COUNT(*) FILTER (WHERE co.final_status = 'venta_cerrada')::int AS sold,
+          COUNT(*) FILTER (WHERE co.final_status IN ('venta_cerrada','cliente_existente'))::int AS sold,
           COUNT(*) FILTER (WHERE co.is_recoverable = TRUE)::int AS recoverable,
           AVG(ascr.overall_score)::float AS avg_overall_score,
           AVG(ascr.speed_score)::float AS avg_speed_score,

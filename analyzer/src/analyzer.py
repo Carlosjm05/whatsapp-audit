@@ -160,9 +160,11 @@ def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
             if bucket == "sunday":
                 sunday_gaps.append(mins)
 
-    # SLA de 10 min: cualquier respuesta > 10 min en horario laboral
-    # es violación. Domingos NO cuentan para SLA (se reportan aparte).
-    SLA_MIN = 10
+    # SLA de 5 min: cualquier respuesta > 5 min en horario laboral
+    # es violación. Definido por Óscar (2026-04-26): "5 en adelante ya es
+    # mucho". Antes era 10 min — al bajar a 5 muchos leads previos quedan
+    # con violación. Domingos NO cuentan para SLA (se reportan aparte).
+    SLA_MIN = 5
     sla_violations: List[Dict[str, Any]] = []
     for i in range(1, len(msgs)):
         prev, cur = msgs[i-1], msgs[i]
@@ -189,19 +191,19 @@ def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
     if longest_gap_hours is not None:
         longest_gap_hours = round(longest_gap_hours, 2)
 
-    # Umbrales (minutos). SLA duro de Óscar: cualquier respuesta > 10 min
+    # Umbrales (minutos). SLA duro de Óscar: cualquier respuesta > 5 min
     # es error del asesor.
     if first_response_minutes is None:
         cat = "critico"
     elif first_response_minutes <= 2:
         cat = "excelente"
-    elif first_response_minutes <= 5:
+    elif first_response_minutes <= 5:     # dentro del SLA
         cat = "bueno"
-    elif first_response_minutes <= 10:    # dentro del SLA
+    elif first_response_minutes <= 15:    # apenas fuera del SLA
         cat = "regular"
-    elif first_response_minutes <= 30:    # fuera del SLA
+    elif first_response_minutes <= 60:    # claramente lento
         cat = "malo"
-    else:                                  # > 30 min
+    else:                                  # > 1h
         cat = "critico"
 
     hour_counts: Dict[int, int] = {}
@@ -334,11 +336,11 @@ def _format_hints(metadata: Dict[str, Any], computed: Dict[str, Any],
         for sample in (computed.get("template_samples") or []):
             lines.append(f"  - plantilla detectada: \"{sample}...\"")
 
-    # SLA de 10 min: pasar conteo y muestras al LLM para que las
+    # SLA de 5 min: pasar conteo y muestras al LLM para que las
     # incluya en errors_list con evidencia específica.
     v_count = computed.get("sla_violations_count", 0)
     if v_count > 0:
-        lines.append(f"- sla_10min_violaciones_total: {v_count} (cada una es error)")
+        lines.append(f"- sla_5min_violaciones_total: {v_count} (cada una es error)")
         # Pasar hasta 5 violaciones concretas con timestamps.
         samples = (computed.get("sla_violations") or [])[:5]
         for v in samples:

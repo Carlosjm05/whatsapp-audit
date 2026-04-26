@@ -39,10 +39,11 @@ def get_trends(
     )
 
     # Conversión: cerrados vs total por mes
+    # Incluye cliente_existente: ya compraron y siguen en postventa, cuentan como venta.
     conversion = fetch_all(
         f"""SELECT to_char(date_trunc('month', l.first_contact_at), 'YYYY-MM') AS month,
                    COUNT(*)::int AS leads,
-                   COUNT(*) FILTER (WHERE co.final_status = 'venta_cerrada')::int AS conversions
+                   COUNT(*) FILTER (WHERE co.final_status IN ('venta_cerrada','cliente_existente'))::int AS conversions
               FROM leads l
               LEFT JOIN conversation_outcomes co ON co.lead_id = l.id
              WHERE l.first_contact_at IS NOT NULL{where_sql}

@@ -58,10 +58,19 @@ _FAULT_WEIGHT = {
 
 
 def _recency_decay(last_contact_at: Any) -> float:
-    """Decay exponencial: 1.0 en el día, ~0.5 a 30 días, ~0.2 a 90 días.
-    Si no hay fecha, asume 60 días."""
+    """Decay exponencial APLANADO: 1.0 en el día, ~0.78 a 30 días,
+    ~0.47 a 90 días, ~0.22 a 180 días, ~0.05 a 360 días.
+
+    Antes era e^(-days/45) — descartaba leads viejos demasiado rápido.
+    Óscar dice (2026-04-26): "nunca es muy tarde para retomar un lead,
+    a las personas hay que escribirles hasta que se cansen". Curva más
+    suave deja que leads de 6+ meses sigan apareciendo en /ghosts con
+    score moderado en vez de aparecer al fondo.
+
+    Si no hay fecha, asume 90 días (~0.47).
+    """
     if last_contact_at is None:
-        return 0.3
+        return 0.47
     try:
         if isinstance(last_contact_at, str):
             # ISO 8601 con Z o offset.
@@ -72,10 +81,9 @@ def _recency_decay(last_contact_at: Any) -> float:
             dt = dt.replace(tzinfo=timezone.utc)
         delta_days = (datetime.now(timezone.utc) - dt).days
     except (ValueError, TypeError, AttributeError):
-        return 0.3
+        return 0.47
     delta_days = max(0, delta_days)
-    # e^(-days/45) — después de 45 días pierde 63%, 90 días 87%.
-    return math.exp(-delta_days / 45.0)
+    return math.exp(-delta_days / 120.0)
 
 
 def compute_ghost_score(

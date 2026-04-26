@@ -619,10 +619,10 @@ export default function LeadDetailPage() {
           )}
           <div className="flex flex-wrap gap-2 mb-3">
             {speedCompliance === true && (
-              <Badge tone="green">✓ Respondió a tiempo (SLA 10 min)</Badge>
+              <Badge tone="green">✓ Respondió a tiempo (SLA 5 min)</Badge>
             )}
             {speedCompliance === false && (
-              <Badge tone="red">✗ Violó SLA de 10 min</Badge>
+              <Badge tone="red">✗ Violó SLA de 5 min</Badge>
             )}
             {followupCompliance === true && (
               <Badge tone="green">✓ Hizo seguimiento</Badge>

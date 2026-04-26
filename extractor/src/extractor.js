@@ -59,6 +59,95 @@ class Extractor {
         }
     }
 
+    // ─── INDEX MODE: SOLO METADATOS (sin mensajes ni media) ─
+    // Usado por `npm run index` (primer escaneo). Calcula los conteos
+    // y rangos de fechas a partir de los mensajes en memoria pero NO
+    // los persiste — solo escribe la "ficha" del chat en
+    // raw_conversations con extraction_status='indexado'.
+    // Devuelve null si el chat se descarta (cutoff de fecha o sin mensajes
+    // procesables); devuelve metadata si se guardó.
+    async indexChatMetadata(jid, chatName, messages, runId, options = {}) {
+        const cutoffIso = options.cutoffIso;  // ej. '2026-03-20' (interpretado en hora Bogotá)
+        // Cutoff INCLUSIVO en HORA BOGOTÁ (UTC-5, sin DST). '2026-03-20' =
+        // "todo el 20 de marzo hora Bogotá y antes entran".
+        //   Inicio 21-mar Bogotá = 2026-03-21T00:00:00-05:00 = 2026-03-21T05:00:00Z
+        // El comparador `lastMessageAt >= cutoffEnd` excluye desde ese
+        // instante en adelante. Así abarcamos las 24h del día indicado
+        // (Colombia no usa DST, offset es fijo -05:00).
+        let cutoffEnd = null;
+        if (cutoffIso) {
+            // Parseo defensivo: aceptamos 'YYYY-MM-DD' o ISO completo.
+            const m = /^(\d{4}-\d{2}-\d{2})/.exec(cutoffIso.trim());
+            if (!m) {
+                throw new Error(`EXTRACTION_CUTOFF_DATE inválido: ${cutoffIso}`);
+            }
+            // Construir 00:00 -05:00 del DÍA SIGUIENTE.
+            const [y, mo, d] = m[1].split('-').map(Number);
+            // UTC equivalente: día siguiente 05:00 UTC.
+            cutoffEnd = new Date(Date.UTC(y, mo - 1, d + 1, 5, 0, 0));
+            if (Number.isNaN(cutoffEnd.getTime())) {
+                throw new Error(`EXTRACTION_CUTOFF_DATE inválido: ${cutoffIso}`);
+            }
+        }
+        const contactNumber = jid.replace('@s.whatsapp.net', '');
+
+        const deduped = this._deduplicateMessages(messages);
+        if (deduped.length === 0) return null;
+
+        let firstMessageAt = null;
+        let lastMessageAt = null;
+        let audioCount = 0;
+        let imageCount = 0;
+        let docCount = 0;
+        let total = 0;
+
+        for (const msg of deduped) {
+            const ts = msg.messageTimestamp
+                ? new Date(Number(msg.messageTimestamp) * 1000)
+                : null;
+            if (!ts) continue;
+            total++;
+            if (!firstMessageAt || ts < firstMessageAt) firstMessageAt = ts;
+            if (!lastMessageAt || ts > lastMessageAt) lastMessageAt = ts;
+
+            // Conteos rápidos por tipo (sin desempacar el mensaje completo).
+            const c = this._unwrapMessage(msg.message);
+            if (!c) continue;
+            if (c.audioMessage) audioCount++;
+            else if (c.imageMessage) imageCount++;
+            else if (c.documentMessage || c.documentWithCaptionMessage) docCount++;
+        }
+
+        if (total === 0 || !lastMessageAt) return null;
+
+        // Cutoff: si el último mensaje del chat cae en o después del día
+        // siguiente al cutoff, ignoramos el chat completo. Decisión de
+        // Carlos: chats nuevos (con actividad reciente) NO se procesan.
+        if (cutoffEnd && lastMessageAt >= cutoffEnd) {
+            return { skipped: true, reason: 'cutoff', last_message_at: lastMessageAt };
+        }
+
+        const inserted = await this.db.saveConversationMetadata({
+            extraction_run_id: runId,
+            chat_id: jid,
+            phone: formatPhone(contactNumber),
+            whatsapp_name: chatName,
+            is_group: false,
+            total_messages: total,
+            total_audios: audioCount,
+            total_images: imageCount,
+            total_documents: docCount,
+            first_message_at: firstMessageAt.toISOString(),
+            last_message_at: lastMessageAt.toISOString(),
+        });
+
+        return {
+            inserted,
+            last_message_at: lastMessageAt,
+            total_messages: total,
+        };
+    }
+
     // ─── EXTRAER UN CHAT COMPLETO (2 fases) ─────────────────
     // Fase 1: procesar todos los mensajes (metadata de texto)
     //         y guardarlos en BD con media_path=null.
@@ -66,6 +155,11 @@ class Extractor {
     //         hacer UPDATE en BD con los paths. Las fallas
     //         dejan media_path=null pero el texto queda intacto.
     async extractChat(jid, chatName, messages, runId) {
+        // Para JIDs reales (@s.whatsapp.net) `contactNumber` queda como el
+        // teléfono. Para LIDs/grupos/broadcasts el sufijo se conserva y
+        // formatPhone() lo rechaza devolviendo null — así evitamos guardar
+        // "teléfonos" basura tipo +239758043279515 que en realidad son
+        // identificadores de comunidades/LIDs.
         const contactNumber = jid.replace('@s.whatsapp.net', '');
 
         try {

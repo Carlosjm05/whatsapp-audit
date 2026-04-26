@@ -188,7 +188,7 @@ class AdvisorScores(BaseModel):
     closing_attempt_score: int = 5
     followup_score: int = 5
     overall_score: float = 5.0
-    # Compliance binarios (SLA 10 min + seguimiento).
+    # Compliance binarios (SLA 5 min + seguimiento).
     speed_compliance: Optional[bool] = None
     followup_compliance: Optional[bool] = None
     errors_list: List[str] = Field(default_factory=list)

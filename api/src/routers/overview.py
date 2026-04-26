@@ -22,8 +22,10 @@ def get_overview(_user: str = Depends(get_current_user)) -> OverviewResponse:
     #   contactado = todos los leads
     #   calificado = leads con intent_score >= 5 (escala 1-10) — presupuesto,
     #                propósito y urgencia suficientes para avanzar
-    #   visita     = outcomes.final_status en visita_agendada/venta_cerrada
-    #   venta      = outcomes.final_status = venta_cerrada
+    #   visita     = outcomes.final_status en visita_agendada/venta_cerrada/cliente_existente
+    #   venta      = outcomes.final_status en venta_cerrada/cliente_existente
+    # cliente_existente = ya compró y sigue en postventa; cuenta como venta consumada
+    # (mismo criterio que en /leads/recoverable y /search para excluirlos del pool).
     funnel_row = fetch_one(
         """
         SELECT
@@ -33,10 +35,10 @@ def get_overview(_user: str = Depends(get_current_user)) -> OverviewResponse:
             WHERE li.intent_score IS NOT NULL AND li.intent_score >= 5) AS calificado,
           (SELECT COUNT(*)::int
              FROM conversation_outcomes co
-            WHERE co.final_status IN ('visita_agendada','venta_cerrada')) AS visita,
+            WHERE co.final_status IN ('visita_agendada','venta_cerrada','cliente_existente')) AS visita,
           (SELECT COUNT(*)::int
              FROM conversation_outcomes co
-            WHERE co.final_status = 'venta_cerrada') AS venta
+            WHERE co.final_status IN ('venta_cerrada','cliente_existente')) AS venta
         """
     ) or {}
     funnel = FunnelCounts(
