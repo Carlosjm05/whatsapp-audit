@@ -22,6 +22,7 @@ import {
   ChevronDown,
   Sparkles,
   Wrench,
+  Download,
 } from 'lucide-react';
 import StatusIndicator from './StatusIndicator';
 
@@ -71,8 +72,9 @@ const groups: NavGroup[] = [
     title: 'Sistema',
     icon: Wrench,
     items: [
-      { href: '/conexion',  label: 'Conexión WhatsApp', icon: Smartphone, badge: 'new' },
-      { href: '/catalogos', label: 'Catálogos', icon: Settings },
+      { href: '/conexion',   label: 'Conexión WhatsApp', icon: Smartphone, badge: 'new' },
+      { href: '/extraccion', label: 'Extracción por lotes', icon: Download, badge: 'new' },
+      { href: '/catalogos',  label: 'Catálogos', icon: Settings },
     ],
   },
 ];

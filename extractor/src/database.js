@@ -259,6 +259,7 @@ class Database {
         const result = await this.pool.query(`
             SELECT
                 COUNT(*) as total,
+                COUNT(*) FILTER (WHERE extraction_status = 'indexado') as indexado,
                 COUNT(*) FILTER (WHERE extraction_status = 'extracted') as extracted,
                 COUNT(*) FILTER (WHERE extraction_status = 'pending') as pending,
                 COUNT(*) FILTER (WHERE extraction_status = 'failed') as failed,
@@ -267,6 +268,115 @@ class Database {
             FROM raw_conversations
         `);
         return result.rows[0];
+    }
+
+    // ─── INDEX MODE: METADATOS SIN MENSAJES ─────────────────
+    // Guarda solo la "ficha" del chat (chat_id, phone, conteos, fechas).
+    // NO inserta mensajes ni descarga media. Usado por modo `index`
+    // (primer escaneo). Si el chat ya existe en otro estado (extracted,
+    // failed), NO lo toca — el snapshot es inmutable.
+    async saveConversationMetadata(data) {
+        const id = uuidv4();
+        const res = await this.pool.query(
+            `INSERT INTO raw_conversations (
+                id, extraction_run_id, chat_id, phone, whatsapp_name,
+                is_group, total_messages, total_audios, total_images,
+                total_documents, first_message_at, last_message_at,
+                extraction_status
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'indexado')
+            ON CONFLICT (chat_id) DO NOTHING
+            RETURNING id`,
+            [
+                id, data.extraction_run_id, data.chat_id, data.phone,
+                data.whatsapp_name, !!data.is_group,
+                data.total_messages || 0, data.total_audios || 0,
+                data.total_images || 0, data.total_documents || 0,
+                data.first_message_at, data.last_message_at,
+            ]
+        );
+        return res.rowCount > 0;  // true si se insertó, false si ya existía
+    }
+
+    // Asigna extract_priority a TODOS los chats con extraction_status='indexado'
+    // que aún no la tengan. Orden: last_message_at DESC (más reciente primero).
+    // Idempotente: chats que ya tienen prioridad NO se renumeran (snapshot
+    // inmutable entre reescaneos).
+    async assignExtractPriorities() {
+        const res = await this.pool.query(`
+            WITH ordenados AS (
+                SELECT id,
+                       ROW_NUMBER() OVER (ORDER BY last_message_at DESC, chat_id ASC) AS rn
+                  FROM raw_conversations
+                 WHERE extraction_status = 'indexado'
+                   AND extract_priority IS NULL
+            )
+            UPDATE raw_conversations rc
+               SET extract_priority = COALESCE(
+                       (SELECT MAX(extract_priority)
+                          FROM raw_conversations
+                         WHERE extract_priority IS NOT NULL), 0
+                   ) + ordenados.rn
+              FROM ordenados
+             WHERE rc.id = ordenados.id
+        `);
+        return res.rowCount;
+    }
+
+    // Próximo lote a extraer. Toma chats indexados ordenados por
+    // extract_priority ASC (los de mayor prioridad = más recientes).
+    async getNextExtractBatch(limit) {
+        const res = await this.pool.query(
+            `SELECT chat_id, whatsapp_name, phone, last_message_at, extract_priority
+               FROM raw_conversations
+              WHERE extraction_status = 'indexado'
+                AND extract_priority IS NOT NULL
+              ORDER BY extract_priority ASC
+              LIMIT $1`,
+            [limit]
+        );
+        return res.rows;
+    }
+
+    // Histograma por mes (last_message_at) + estado. Usado por preview.
+    async getIndexHistogram() {
+        const res = await this.pool.query(`
+            SELECT to_char(date_trunc('month', last_message_at), 'YYYY-MM') AS mes,
+                   COUNT(*)::int AS total,
+                   COUNT(*) FILTER (WHERE extraction_status = 'indexado')::int  AS indexado,
+                   COUNT(*) FILTER (WHERE extraction_status = 'extracted')::int AS extracted,
+                   COUNT(*) FILTER (WHERE extraction_status = 'failed')::int    AS failed
+              FROM raw_conversations
+             WHERE last_message_at IS NOT NULL
+             GROUP BY 1
+             ORDER BY 1 DESC
+        `);
+        return res.rows;
+    }
+
+    // Frontera actual: cuál fue el último chat extraído (en términos de
+    // prioridad). Próximo lote arranca desde priority + 1.
+    async getExtractionFrontier() {
+        const res = await this.pool.query(`
+            SELECT MAX(extract_priority) AS max_priority,
+                   COUNT(*) FILTER (WHERE extraction_status = 'indexado')::int  AS indexado_pendientes,
+                   COUNT(*) FILTER (WHERE extraction_status = 'extracted')::int AS extracted_total
+              FROM raw_conversations
+             WHERE extract_priority IS NOT NULL
+        `);
+        const row = res.rows[0] || {};
+        // priority del próximo a procesar
+        const nextRes = await this.pool.query(`
+            SELECT MIN(extract_priority) AS next_priority
+              FROM raw_conversations
+             WHERE extraction_status = 'indexado'
+               AND extract_priority IS NOT NULL
+        `);
+        return {
+            max_priority: row.max_priority,
+            indexado_pendientes: row.indexado_pendientes || 0,
+            extracted_total: row.extracted_total || 0,
+            next_priority: (nextRes.rows[0] || {}).next_priority,
+        };
     }
 }
 

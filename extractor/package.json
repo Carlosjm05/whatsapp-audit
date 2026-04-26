@@ -5,6 +5,9 @@
   "main": "src/index.js",
   "scripts": {
     "extract": "node src/index.js --mode=extract",
+    "index": "node src/index.js --mode=index",
+    "preview": "node src/index.js --mode=preview",
+    "daemon": "node src/index.js --mode=daemon",
     "test-connection": "node src/index.js --mode=test",
     "stats": "node src/index.js --mode=stats"
   },

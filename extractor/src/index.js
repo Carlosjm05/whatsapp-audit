@@ -31,6 +31,12 @@ const SESSION_PATH = process.env.SESSION_PATH || '/app/auth_state';
 // El proceso igual termina antes si llega 'isLatest' en un batch.
 const SYNC_TIMEOUT_MS = parseInt(process.env.SYNC_TIMEOUT_MS || '3600000');
 
+// Cutoff de fecha: solo se indexan chats cuyo ÚLTIMO mensaje es ≤ esta
+// fecha. Decisión de Carlos (2026-04-26): el snapshot del proyecto se
+// congela el 2026-03-20 — chats con actividad posterior (leads vivos)
+// no entran al pipeline de auditoría. Configurable por env var.
+const EXTRACTION_CUTOFF_DATE = process.env.EXTRACTION_CUTOFF_DATE || '2026-03-20';
+
 const CONFIG = {
     extractionDelayMin: parseInt(process.env.EXTRACTION_DELAY_MIN || '2000'),
     extractionDelayMax: parseInt(process.env.EXTRACTION_DELAY_MAX || '4000'),
@@ -389,6 +395,96 @@ async function runTestMode() {
     logger.info('✅ Conexión verificada. Para extraer, ejecuta: npm run extract');
 }
 
+// ─── MODO: DAEMON (escucha cola Redis) ──────────────────────
+// El dashboard publica jobs vía API → Redis. Este loop los procesa
+// uno a uno. Mismo patrón que el analyzer.
+// Action posibles:
+//   - "preview": no abre WhatsApp, solo lee DB y publica resultado.
+//   - "index":   abre WhatsApp (QR si hace falta), guarda metadatos,
+//                cierra al terminar.
+//   - "extract": abre WhatsApp + procesa próximos N chats indexados.
+async function runDaemonMode() {
+    logger.info('🤖 MODO DAEMON — Escuchando cola Redis `wa:jobs`...');
+    logger.info('   Para encolar un job desde dashboard: POST /api/extraction/jobs');
+    logger.info('═══════════════════════════════════════════');
+
+    // Limpia cualquier job huérfano que haya quedado por crash anterior —
+    // sin esto, POST /jobs devolvería 409 hasta el TTL (2h) bloqueando
+    // a Carlos.
+    const orphan = await statusPub.clearOrphanCurrentJob();
+    if (orphan) {
+        logger.warn(`🧹 Job huérfano del crash anterior limpiado: ${orphan.action} (id=${orphan.id || '?'})`);
+    }
+
+    // Heartbeat inicial: el dashboard ve el daemon vivo desde el arranque.
+    await statusPub.daemonHeartbeat();
+
+    while (!isShuttingDown) {
+        // Heartbeat ANTES de bloquear en BRPOP: si no hay jobs durante
+        // mucho tiempo, el TTL de wa:status (5min) no expira porque acá
+        // refrescamos cada ~5s.
+        await statusPub.daemonHeartbeat();
+
+        const job = await statusPub.popJob(5);
+        if (!job) continue;  // timeout, vuelve a esperar
+
+        logger.info('═══════════════════════════════════════════');
+        logger.info(`🛎️  JOB recibido: ${job.action} (id=${job.id || '?'})`);
+        const startedAt = new Date().toISOString();
+
+        await statusPub.setCurrentJob({
+            ...job,
+            status: 'running',
+            started_at: startedAt,
+        });
+
+        let result = { id: job.id, action: job.action, status: 'completed' };
+
+        try {
+            if (job.action === 'preview') {
+                await runPreviewMode();
+            } else if (job.action === 'index') {
+                sock = await connectWithRetry();
+                await waitForHistorySync();
+                await runIndexMode();
+                if (sock) { try { sock.end(undefined); } catch(_){} sock = null; }
+            } else if (job.action === 'extract') {
+                const batch = parseInt(job.batch, 10);
+                if (!batch || batch <= 0) {
+                    throw new Error('extract job requires `batch` > 0');
+                }
+                sock = await connectWithRetry();
+                await waitForHistorySync();
+                await runExtractMode({ batch });
+                if (sock) { try { sock.end(undefined); } catch(_){} sock = null; }
+            } else {
+                throw new Error(`Acción desconocida: ${job.action}`);
+            }
+        } catch (err) {
+            logger.error(`❌ Job ${job.action} falló: ${err.message}`);
+            result.status = 'failed';
+            result.error = err.message;
+            if (sock) { try { sock.end(undefined); } catch(_){} sock = null; }
+        }
+
+        result.started_at = startedAt;
+        result.finished_at = new Date().toISOString();
+        await statusPub.pushJobHistory(result);
+        await statusPub.setCurrentJob(null);
+
+        // Reset estado global del sync para el próximo job.
+        syncedMessages.clear();
+        syncedContacts.clear();
+        syncComplete = false;
+        totalSyncedMsgs = 0;
+
+        logger.info(`✅ Job ${job.action} ${result.status}.`);
+        logger.info('   Esperando próximo job...');
+    }
+
+    logger.info('🛑 Daemon detenido (shutdown).');
+}
+
 // ─── MODO: ESTADÍSTICAS ─────────────────────────────────────
 async function runStatsMode() {
     logger.info('📊 MODO STATS — Consultando base de datos...');
@@ -397,11 +493,133 @@ async function runStatsMode() {
     logger.info('═══════════════════════════════════════════');
     logger.info('📊 ESTADÍSTICAS DE EXTRACCIÓN:');
     logger.info(`   Total conversaciones: ${stats.total}`);
+    logger.info(`   Indexadas (sin extraer): ${stats.indexado || 0}`);
     logger.info(`   Extraídas: ${stats.extracted}`);
     logger.info(`   Pendientes: ${stats.pending}`);
     logger.info(`   Fallidas: ${stats.failed}`);
     logger.info(`   Total mensajes: ${stats.total_messages}`);
     logger.info(`   Total audios: ${stats.total_audios}`);
+    logger.info('═══════════════════════════════════════════');
+}
+
+// ─── MODO: PREVIEW (sin Baileys, solo lee DB) ────────────────
+async function runPreviewMode() {
+    logger.info('👁️  MODO PREVIEW — Estado del snapshot indexado:');
+    logger.info('═══════════════════════════════════════════');
+
+    const stats = await db.getExtractionStats();
+    const frontier = await db.getExtractionFrontier();
+    const histogram = await db.getIndexHistogram();
+
+    logger.info(`📊 RESUMEN:`);
+    logger.info(`   Total chats en DB:   ${stats.total}`);
+    logger.info(`   Indexados pendientes: ${frontier.indexado_pendientes}`);
+    logger.info(`   Ya extraídos:         ${frontier.extracted_total}`);
+    logger.info(`   Fallidos:             ${stats.failed}`);
+    logger.info('');
+    logger.info(`🎯 SIGUIENTE LOTE:`);
+    if (frontier.next_priority) {
+        logger.info(`   Próxima prioridad a procesar: #${frontier.next_priority}`);
+    } else {
+        logger.info(`   No hay chats indexados pendientes.`);
+        logger.info(`   Si nunca corriste \`npm run index\`, ejecutalo ahora.`);
+    }
+
+    if (histogram.length > 0) {
+        logger.info('');
+        logger.info('📅 HISTOGRAMA POR MES (last_message_at):');
+        for (const row of histogram) {
+            const bar = '█'.repeat(Math.min(50, Math.round(row.total / 50)));
+            logger.info(
+                `   ${row.mes}: ${String(row.total).padStart(5)} chats ` +
+                `(idx:${row.indexado} ext:${row.extracted} fail:${row.failed}) ${bar}`
+            );
+        }
+    }
+    logger.info('═══════════════════════════════════════════');
+}
+
+// ─── MODO: INDEX (primer escaneo, solo metadatos) ────────────
+async function runIndexMode() {
+    logger.info('📇 MODO INDEX — Guardando solo metadatos de chats...');
+    logger.info(`   Cutoff de fecha: chats con last_message_at ≤ ${EXTRACTION_CUTOFF_DATE} solamente`);
+    logger.info(`   (chats con actividad posterior se IGNORAN)`);
+    logger.info('═══════════════════════════════════════════');
+
+    const extractor = new Extractor(sock, db, CONFIG);
+    const runId = await db.createExtractionRun();
+
+    const chats = [...syncedMessages.entries()].map(([jid, msgs]) => ({
+        jid,
+        name: syncedContacts.get(jid) || jid.replace('@s.whatsapp.net', ''),
+        messages: msgs,
+    }));
+
+    logger.info(`Total chats sincronizados: ${chats.length}`);
+    await db.updateExtractionRun(runId, { total_chats: chats.length, status: 'running' });
+
+    let indexed = 0;
+    let skippedCutoff = 0;
+    let skippedExisting = 0;
+    let empty = 0;
+
+    for (let i = 0; i < chats.length; i++) {
+        if (isShuttingDown) break;
+        const chat = chats[i];
+        try {
+            const result = await extractor.indexChatMetadata(
+                chat.jid, chat.name, chat.messages, runId,
+                { cutoffIso: EXTRACTION_CUTOFF_DATE }
+            );
+            if (!result) {
+                empty++;
+            } else if (result.skipped && result.reason === 'cutoff') {
+                skippedCutoff++;
+            } else if (result.inserted === false) {
+                skippedExisting++;  // ya estaba en DB (de otro estado)
+            } else {
+                indexed++;
+            }
+        } catch (err) {
+            logger.warn(`   ⚠️  ${chat.name}: ${err.message}`);
+        } finally {
+            // Liberar memoria — el modo index NO necesita los mensajes después.
+            syncedMessages.delete(chat.jid);
+            chat.messages = null;
+        }
+
+        if ((i + 1) % 200 === 0) {
+            logger.info(
+                `   📊 ${i + 1}/${chats.length} procesados · ` +
+                `indexados=${indexed} skipCutoff=${skippedCutoff} ` +
+                `skipExist=${skippedExisting} vacíos=${empty}`
+            );
+        }
+    }
+
+    syncedMessages.clear();
+
+    // Asignar prioridades de extracción a los chats recién indexados.
+    logger.info('🎯 Asignando extract_priority...');
+    const assigned = await db.assignExtractPriorities();
+    logger.info(`   ${assigned} chats con prioridad asignada.`);
+
+    await db.updateExtractionRun(runId, {
+        status: 'completed',
+        extracted_chats: indexed,
+        failed_chats: 0,
+        finished_at: new Date().toISOString(),
+    });
+
+    logger.info('═══════════════════════════════════════════');
+    logger.info(`✅ INDEX COMPLETADO:`);
+    logger.info(`   Indexados nuevos:       ${indexed}`);
+    logger.info(`   Saltados por cutoff:    ${skippedCutoff} (post ${EXTRACTION_CUTOFF_DATE})`);
+    logger.info(`   Ya existían en DB:      ${skippedExisting}`);
+    logger.info(`   Vacíos/sin timestamp:   ${empty}`);
+    logger.info('');
+    logger.info(`👉 Para ver el estado: docker compose run --rm extractor npm run preview`);
+    logger.info(`👉 Para procesar lote: docker compose run --rm extractor npm run extract -- --batch=1000`);
     logger.info('═══════════════════════════════════════════');
 }
 
@@ -413,29 +631,77 @@ async function runExtractMode(options = {}) {
     const runId = await db.createExtractionRun();
 
     try {
-        // Filtrar chats según opciones
-        let targetChats = [...syncedMessages.entries()]
-            .map(([jid, msgs]) => ({
+        // Map del sync para acceso rápido por jid
+        const syncedByJid = new Map();
+        for (const [jid, msgs] of syncedMessages.entries()) {
+            syncedByJid.set(jid, {
                 jid,
                 name: syncedContacts.get(jid) || jid.replace('@s.whatsapp.net', ''),
                 messages: msgs,
-            }));
+            });
+        }
 
-        if (options.phone) {
+        let targetChats = [];
+
+        // ─── MODO BATCH: usar el snapshot indexado de DB ──────
+        // Toma los próximos N chats con extract_priority menor (más
+        // recientes). NO depende del orden del sync — es determinístico
+        // entre reescaneos del QR.
+        if (options.batch && options.batch > 0) {
+            const queue = await db.getNextExtractBatch(options.batch);
+            if (queue.length === 0) {
+                logger.warn('⚠️  No hay chats indexados pendientes. Corré `npm run index` primero.');
+                await db.updateExtractionRun(runId, {
+                    status: 'completed', total_chats: 0, finished_at: new Date().toISOString(),
+                });
+                return;
+            }
+            logger.info(`⚙️  --batch=${options.batch}: tomando próximos ${queue.length} chats indexados`);
+            logger.info(
+                `   Rango de prioridad: #${queue[0].extract_priority} → ` +
+                `#${queue[queue.length-1].extract_priority}`
+            );
+            for (const row of queue) {
+                const fromSync = syncedByJid.get(row.chat_id);
+                if (!fromSync) {
+                    logger.warn(
+                        `   ⚠️  Chat indexado #${row.extract_priority} (${row.whatsapp_name}) ` +
+                        `no apareció en este sync. Lo dejamos pendiente para próximo reescaneo.`
+                    );
+                    continue;
+                }
+                targetChats.push(fromSync);
+            }
+        }
+        // ─── MODO LEGACY: usar el sync directo + filtros viejos ──
+        else if (options.phone) {
             const phone = String(options.phone).replace(/[^0-9]/g, '');
-            const match = targetChats.find(c =>
+            const match = [...syncedByJid.values()].find(c =>
                 c.jid.replace('@s.whatsapp.net', '') === phone
             );
             if (!match) {
-                throw new Error(`No se encontró chat para el número ${phone}. Chats disponibles: ${targetChats.length}`);
+                throw new Error(`No se encontró chat para el número ${phone}.`);
             }
             logger.info(`⚙️  --phone=${phone}: extrayendo solo ${match.name}`);
             targetChats = [match];
+        } else {
+            // Fallback legacy: todos los chats del sync (desordenados).
+            // Mejor usar --batch para flujo nuevo.
+            logger.warn('⚠️  Sin --batch ni --phone: procesando TODOS los chats del sync (modo legacy).');
+            logger.warn('   Recomendado: usar `npm run index` + `npm run extract -- --batch=N`');
+            targetChats = [...syncedByJid.values()];
+            if (options.limit && options.limit > 0 && options.limit < targetChats.length) {
+                logger.info(`⚙️  --limit=${options.limit}: solo los primeros ${options.limit} chats`);
+                targetChats = targetChats.slice(0, options.limit);
+            }
         }
 
-        if (options.limit && options.limit > 0 && options.limit < targetChats.length) {
-            logger.info(`⚙️  --limit=${options.limit}: solo los primeros ${options.limit} chats`);
-            targetChats = targetChats.slice(0, options.limit);
+        // Liberar memoria de chats que NO van a procesarse en este lote.
+        const targetJids = new Set(targetChats.map(c => c.jid));
+        for (const jid of [...syncedMessages.keys()]) {
+            if (!targetJids.has(jid)) {
+                syncedMessages.delete(jid);
+            }
         }
 
         logger.info(`Total de chats a extraer: ${targetChats.length}`);
@@ -633,12 +899,17 @@ async function main() {
     const args = parseArgs();
     const mode = args.mode || 'extract';
     const limit = args.limit ? parseInt(args.limit, 10) : null;
+    const batch = args.batch ? parseInt(args.batch, 10) : null;
     const phone = args.phone ? String(args.phone).replace(/[^0-9]/g, '') : null;
     const skipMedia = !!args['skip-media'] || !!args.skipMedia;
     const force = !!args.force;
 
     if (args.limit && (!Number.isFinite(limit) || limit <= 0)) {
         logger.error(`Valor inválido para --limit: ${args.limit}`);
+        process.exit(1);
+    }
+    if (args.batch && (!Number.isFinite(batch) || batch <= 0)) {
+        logger.error(`Valor inválido para --batch: ${args.batch}`);
         process.exit(1);
     }
 
@@ -648,6 +919,8 @@ async function main() {
     logger.info('══════════════════════════════════════════════');
     logger.info('  WHATSAPP AUDIT SYSTEM — EXTRACTOR (Baileys)');
     logger.info(`  Modo: ${mode.toUpperCase()}`);
+    if (mode === 'index') logger.info(`  Cutoff: ${EXTRACTION_CUTOFF_DATE} (chats con last_message_at posterior se IGNORAN)`);
+    if (batch) logger.info(`  Batch: próximos ${batch} chats indexados (por extract_priority ASC)`);
     if (limit) logger.info(`  Límite: ${limit} chats`);
     if (phone) logger.info(`  Teléfono: ${phone}`);
     if (skipMedia) logger.info(`  --skip-media activo: solo textos, sin descargar audios/imágenes`);
@@ -659,10 +932,21 @@ async function main() {
     await db.connect();
     logger.info('✅ Conectado a PostgreSQL');
 
+    // Modos que NO necesitan WhatsApp (solo leen DB):
     if (mode === 'stats') {
         await runStatsMode();
         await db.close();
         return;
+    }
+    if (mode === 'preview') {
+        await runPreviewMode();
+        await db.close();
+        return;
+    }
+    if (mode === 'daemon') {
+        // El daemon levanta su propio socket por job — NO conecta acá.
+        await db.close();
+        return mainDaemon();
     }
 
     // Crear socket y conectar
@@ -677,12 +961,28 @@ async function main() {
         case 'test':
             await runTestMode();
             break;
+        case 'index':
+            await runIndexMode();
+            break;
         case 'extract':
-            await runExtractMode({ limit, phone, force });
+            await runExtractMode({ limit, batch, phone, force });
             break;
         default:
             logger.error(`Modo desconocido: ${mode}`);
     }
+}
+
+// ─── MAIN para el caso DAEMON (no necesita socket previo) ────
+async function mainDaemon() {
+    setupGracefulShutdown();
+    logger.info('══════════════════════════════════════════════');
+    logger.info('  WHATSAPP AUDIT SYSTEM — EXTRACTOR DAEMON (Baileys)');
+    logger.info('══════════════════════════════════════════════');
+    db = new Database();
+    await db.connect();
+    logger.info('✅ Conectado a PostgreSQL');
+    await runDaemonMode();
+    await db.close();
 
     // Cleanup
     logger.info('Cerrando conexiones...');

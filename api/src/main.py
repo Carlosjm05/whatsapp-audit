@@ -21,6 +21,7 @@ from .routers import (
     cost as cost_router,
     errors as errors_router,
     export,
+    extraction as extraction_router,
     knowledge_base,
     leads,
     overview,
@@ -94,6 +95,7 @@ app.include_router(catalogs.router)
 app.include_router(qr_router.router)
 app.include_router(system_router.router)
 app.include_router(cost_router.router)
+app.include_router(extraction_router.router)
 
 
 # --- Health ---

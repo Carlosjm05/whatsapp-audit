@@ -44,12 +44,22 @@ CREATE TABLE raw_conversations (
     last_message_at     TIMESTAMPTZ,
     raw_data_path       TEXT,
     extraction_status   VARCHAR(20) NOT NULL DEFAULT 'pending'
-                        CHECK (extraction_status IN ('pending', 'extracting', 'extracted', 'failed', 'skipped')),
+                        CHECK (extraction_status IN ('pending', 'indexado', 'extracting', 'extracted', 'failed', 'skipped')),
     extraction_error    TEXT,
     retry_count         INTEGER DEFAULT 0,
+    -- Orden determinístico de procesamiento por lotes. Asignado durante
+    -- el modo `index` con ROW_NUMBER() OVER (ORDER BY last_message_at DESC).
+    -- NULL para chats que no pasaron por el flow de indexado.
+    extract_priority    INTEGER,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Index parcial: solo chats indexados pendientes de extraer.
+CREATE INDEX idx_raw_conv_indexado_priority
+    ON raw_conversations(extract_priority)
+    WHERE extraction_status = 'indexado';
+CREATE INDEX idx_raw_conv_status_priority
+    ON raw_conversations(extraction_status, extract_priority);
 
 -- ─────────────────────────────────────────────
 -- TABLA: messages

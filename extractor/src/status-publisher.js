@@ -118,6 +118,87 @@ async function notifyConnected() {
     await safeSet('wa:connected_at', now, 86400);  // 24h
 }
 
+// ─── DAEMON: COLA DE JOBS ───────────────────────────────────
+// El dashboard publica jobs en la lista `wa:jobs` (LPUSH).
+// El extractor en modo daemon hace BRPOP de esa lista.
+//
+// Formato del job (JSON string):
+//   { id: "uuid", action: "index"|"extract"|"preview", batch?: int, requested_by: string, requested_at: ISO }
+//
+// Estado del job actualmente en proceso (para que el dashboard lo lea):
+//   wa:job:current → JSON {id, action, status, started_at, progress?, last_log?}
+//   wa:job:history → lista de últimos 20 jobs ejecutados (LPUSH + LTRIM)
+const JOBS_QUEUE_KEY = 'wa:jobs';
+const CURRENT_JOB_KEY = 'wa:job:current';
+const JOB_HISTORY_KEY = 'wa:job:history';
+
+async function popJob(timeoutSec = 5) {
+    try {
+        const c = getClient();
+        // BRPOP devuelve [key, value] o null si timeout.
+        const result = await c.brpop(JOBS_QUEUE_KEY, timeoutSec);
+        if (!result || !result[1]) return null;
+        try { return JSON.parse(result[1]); }
+        catch (_) { return null; }
+    } catch (_) {
+        // Si Redis está caído, dormimos para no quemar CPU en busy-loop.
+        // Sleep equivalente al timeout normal de BRPOP (~5s).
+        await new Promise(r => setTimeout(r, Math.max(2000, timeoutSec * 1000)));
+        return null;
+    }
+}
+
+// Publica un heartbeat de daemon idle: el dashboard lee `wa:status` y si
+// no se refresca dentro del TTL (5min) pinta "extractor caído". El daemon
+// debe llamar esto en cada iteración del loop, esté procesando o esperando.
+async function daemonHeartbeat() {
+    await safeSet('wa:status', 'daemon_idle', 300);
+    await safeSet('wa:last_activity', new Date().toISOString(), 3600);
+}
+
+// Limpia un job huérfano (estaba 'running' cuando el daemon murió).
+// Se llama al arrancar el daemon para no bloquear el endpoint POST /jobs.
+async function clearOrphanCurrentJob() {
+    try {
+        const c = getClient();
+        const raw = await c.get(CURRENT_JOB_KEY);
+        if (!raw) return null;
+        try {
+            const job = JSON.parse(raw);
+            if (job && job.status === 'running') {
+                await c.del(CURRENT_JOB_KEY);
+                // Lo movemos al historial como huérfano para que quede traza.
+                const orphan = { ...job, status: 'failed', error: 'daemon reiniciado (job huérfano)', finished_at: new Date().toISOString() };
+                await c.lpush(JOB_HISTORY_KEY, JSON.stringify(orphan));
+                await c.ltrim(JOB_HISTORY_KEY, 0, 19);
+                return orphan;
+            }
+        } catch (_) {
+            // raw no parseable → borrar a secas.
+            await c.del(CURRENT_JOB_KEY);
+        }
+        return null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function setCurrentJob(job) {
+    if (!job) {
+        await safeDel(CURRENT_JOB_KEY);
+        return;
+    }
+    await safeSet(CURRENT_JOB_KEY, JSON.stringify(job), 7200); // 2h
+}
+
+async function pushJobHistory(jobResult) {
+    try {
+        const c = getClient();
+        await c.lpush(JOB_HISTORY_KEY, JSON.stringify(jobResult));
+        await c.ltrim(JOB_HISTORY_KEY, 0, 19);  // mantener últimos 20
+    } catch (_) { /* silent */ }
+}
+
 // ─── CLEANUP ────────────────────────────────────────────────
 async function disconnect() {
     if (client) {
@@ -132,5 +213,10 @@ module.exports = {
     heartbeat,
     publishStats,
     notifyConnected,
+    popJob,
+    setCurrentJob,
+    pushJobHistory,
+    daemonHeartbeat,
+    clearOrphanCurrentJob,
     disconnect,
 };
