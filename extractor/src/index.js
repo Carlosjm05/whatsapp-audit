@@ -248,7 +248,50 @@ let totalBatches = 0;
 let isLatestSeen = false;
 
 function setupHistorySync(socket) {
-    socket.ev.on('messaging-history.set', ({ messages, contacts, isLatest }) => {
+    // Reset defensivo de variables globales del sync. Si setupHistorySync
+    // se llama varias veces (reconexiones, reintentos), evitamos arrastrar
+    // contadores de la sesión anterior. waitForHistorySync también las
+    // resetea pero mejor doblar el seguro.
+    lastBatchAt = 0;
+    totalBatches = 0;
+    isLatestSeen = false;
+
+    // ─── DESCUBRIR TODOS LOS CHATS (no solo los con mensajes) ──
+    // chats.set/chats.upsert traen la lista COMPLETA de conversaciones
+    // que el cliente tiene en WhatsApp, con metadata mínima
+    // (last_message_at, unreadCount, name). NO depende de si
+    // messaging-history.set trajo mensajes para ese chat.
+    function _registerChat(c) {
+        const jid = c.id;
+        if (!jid || jid === 'status@broadcast') return;
+        if (jid.endsWith('@g.us')) return;          // grupos fuera
+        if (jid.endsWith('@broadcast')) return;
+        if (jid.endsWith('@newsletter')) return;
+        if (jid.endsWith('@lid')) return;           // LIDs no son teléfonos
+        if (jid.endsWith('@status')) return;        // status updates
+        if (jid.endsWith('@call')) return;          // call rooms (futuro)
+
+        const existing = syncedChats.get(jid) || {};
+        // conversationTimestamp viene en segundos UNIX (number o BigInt).
+        const ts = c.conversationTimestamp != null
+            ? Number(c.conversationTimestamp)
+            : existing.conversationTimestamp;
+        const name = c.name || c.notify || existing.name || null;
+        syncedChats.set(jid, {
+            name,
+            conversationTimestamp: ts,
+            unreadCount: c.unreadCount ?? existing.unreadCount,
+            archived: c.archived ?? existing.archived,
+        });
+    }
+
+    socket.ev.on('messaging-history.set', (data) => {
+        // Defensivo: data.messages puede ser undefined en algunas builds.
+        const messages = data?.messages || [];
+        const contacts = data?.contacts || [];
+        const chats = data?.chats || [];   // Baileys 6.7+ a veces incluye chats acá
+        const isLatest = !!data?.isLatest;
+
         let batchIndividual = 0;
         totalBatches++;
         lastBatchAt = Date.now();
@@ -264,16 +307,21 @@ function setupHistorySync(socket) {
             totalSyncedMsgs++;
         }
 
+        // Si messaging-history.set incluye chats[], también los registramos
+        // — Baileys consolidó en este evento cosas que antes iban en chats.set.
+        if (chats.length > 0) {
+            for (const c of chats) _registerChat(c);
+        }
+
         // Guardar nombres de contactos
-        if (contacts) {
-            for (const c of contacts) {
-                if (c.id && c.notify) syncedContacts.set(c.id, c.notify);
-            }
+        for (const c of contacts) {
+            if (c.id && c.notify) syncedContacts.set(c.id, c.notify);
         }
 
         logger.info(
-            `📥 Sync batch #${totalBatches}: ${batchIndividual} msgs individuales ` +
-            `(${syncedMessages.size} chats, ${totalSyncedMsgs} msgs total)` +
+            `📥 Sync batch #${totalBatches}: ${batchIndividual} msgs ` +
+            `(${syncedMessages.size} chats c/msgs, ${totalSyncedMsgs} msgs total · ` +
+            `${syncedChats.size} chats descubiertos)` +
             `${isLatest ? ' — flag isLatest=true' : ''}`
         );
 
@@ -299,69 +347,52 @@ function setupHistorySync(socket) {
 
     // Capturar pushNames de contacts.update + agregar al store de chats
     // si todavía no estaba (algunos chats solo aparecen vía contacts).
-    socket.ev.on('contacts.update', (updates) => {
+    socket.ev.on('contacts.update', (data) => {
+        const updates = Array.isArray(data) ? data : [];
         for (const u of updates) {
-            if (u.id && u.notify) syncedContacts.set(u.id, u.notify);
+            if (u?.id && u.notify) syncedContacts.set(u.id, u.notify);
         }
     });
-    socket.ev.on('contacts.upsert', (contacts) => {
+    socket.ev.on('contacts.upsert', (data) => {
+        const contacts = Array.isArray(data) ? data : [];
         for (const c of contacts) {
-            if (c.id && c.notify) syncedContacts.set(c.id, c.notify);
+            if (c?.id && c.notify) syncedContacts.set(c.id, c.notify);
         }
     });
 
-    // ─── DESCUBRIR TODOS LOS CHATS (no solo los con mensajes) ──
-    // chats.set/chats.upsert traen la lista COMPLETA de conversaciones
-    // que el cliente tiene en WhatsApp, con metadata mínima
-    // (last_message_at, unreadCount, name). NO depende de si
-    // messaging-history.set trajo mensajes para ese chat.
-    function _registerChat(c) {
-        const jid = c.id;
-        if (!jid || jid === 'status@broadcast') return;
-        if (jid.endsWith('@g.us')) return;          // grupos fuera
-        if (jid.endsWith('@broadcast')) return;
-        if (jid.endsWith('@newsletter')) return;
-        if (jid.endsWith('@lid')) return;           // LIDs no son teléfonos
-
-        const existing = syncedChats.get(jid) || {};
-        // conversationTimestamp viene en segundos UNIX (number o BigInt).
-        const ts = c.conversationTimestamp != null
-            ? Number(c.conversationTimestamp)
-            : existing.conversationTimestamp;
-        const name = c.name || c.notify || existing.name || null;
-        syncedChats.set(jid, {
-            name,
-            conversationTimestamp: ts,
-            unreadCount: c.unreadCount ?? existing.unreadCount,
-            archived: c.archived ?? existing.archived,
-        });
-    }
-
-    socket.ev.on('chats.set', ({ chats, isLatest }) => {
+    // chats.set: lista COMPLETA de chats. Defensivo contra firma variable
+    // (algunos builds de Baileys pasan array directo, otros { chats, isLatest }).
+    socket.ev.on('chats.set', (data) => {
+        const chats = Array.isArray(data) ? data : (data?.chats || []);
+        const isLatest = !!data?.isLatest;
+        if (!chats.length) return;
         for (const c of chats) _registerChat(c);
         logger.info(
             `📇 chats.set: ${chats.length} chats (total descubiertos: ${syncedChats.size})` +
             `${isLatest ? ' — flag isLatest=true' : ''}`
         );
-        // Marca actividad para waitForHistorySync (descubrir más chats
-        // cuenta como progreso de sync).
         lastBatchAt = Date.now();
         totalBatches++;
+        // CRÍTICO: marcar isLatestSeen también acá. Si messaging-history.set
+        // nunca emite isLatest pero chats.set sí, waitForHistorySync nunca
+        // cortaría por silencio (esperaría el timeout completo de 2h).
+        if (isLatest) isLatestSeen = true;
     });
 
-    socket.ev.on('chats.upsert', (chats) => {
+    socket.ev.on('chats.upsert', (data) => {
+        const chats = Array.isArray(data) ? data : (data?.chats || []);
+        if (!chats.length) return;
         for (const c of chats) _registerChat(c);
-        if (chats.length > 0) {
-            logger.info(
-                `📇 chats.upsert: +${chats.length} (total descubiertos: ${syncedChats.size})`
-            );
-            lastBatchAt = Date.now();
-        }
+        logger.info(
+            `📇 chats.upsert: +${chats.length} (total descubiertos: ${syncedChats.size})`
+        );
+        lastBatchAt = Date.now();
     });
 
-    socket.ev.on('chats.update', (updates) => {
+    socket.ev.on('chats.update', (data) => {
+        const updates = Array.isArray(data) ? data : (data?.chats || []);
         for (const c of updates) {
-            if (!c.id) continue;
+            if (!c?.id) continue;
             // updates pueden actualizar conversationTimestamp/unreadCount
             // de chats ya descubiertos. Mantenemos el merge.
             _registerChat(c);
@@ -700,9 +731,14 @@ async function runIndexMode() {
         chatMeta: meta,
     }));
 
+    // Conteo eficiente: iteramos el set chico (chats con mensajes ~471)
+    // y verificamos pertenencia en el grande (chats descubiertos ~12k).
+    let chatsWithMsgs = 0;
+    for (const jid of syncedMessages.keys()) {
+        if (syncedChats.has(jid)) chatsWithMsgs++;
+    }
     logger.info(
-        `Total chats descubiertos: ${chats.length} ` +
-        `(con mensajes: ${[...syncedMessages.keys()].filter(j => syncedChats.has(j)).length})`
+        `Total chats descubiertos: ${chats.length} (con mensajes en sync: ${chatsWithMsgs})`
     );
     await db.updateExtractionRun(runId, { total_chats: chats.length, status: 'running' });
 
