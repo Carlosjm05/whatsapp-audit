@@ -121,9 +121,14 @@ services:
       - FETCH_HISTORY_SLEEP_MS=${FETCH_HISTORY_SLEEP_MS:-3000}
       - MAX_RETRIES=${MAX_RETRIES:-3}
       # Cutoff de fecha para `npm run index`. Chats con last_message_at
-      # POSTERIOR a este día se ignoran. INCLUSIVO: '2026-03-20' incluye
-      # todo el día 20 (el extractor suma 1 día internamente).
-      - EXTRACTION_CUTOFF_DATE=${EXTRACTION_CUTOFF_DATE:-2026-03-20}
+      # POSTERIOR a este día se ignoran. INCLUSIVO: el extractor suma 1
+      # día internamente para abarcar todo el día indicado en hora Bogotá.
+      # Default '2030-12-31' = SIN filtrado efectivo (procesa todos los
+      # chats sin importar cuándo fue el último mensaje). Para activar
+      # filtrado, sobreescribir en .env con la fecha tope deseada.
+      # Ejemplo: EXTRACTION_CUTOFF_DATE=2026-03-20 (solo chats hasta
+      # el 20 de marzo de 2026 hora Bogotá).
+      - EXTRACTION_CUTOFF_DATE=${EXTRACTION_CUTOFF_DATE:-2030-12-31}
     volumes:
       - ./data:/app/data
       - extractor_session:/app/auth_state
