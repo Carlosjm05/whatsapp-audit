@@ -74,10 +74,19 @@ async function createSocket() {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pinoLogger),
         },
-        browser: Browsers.macOS('Desktop'),
+        // Browser hint: cambiamos de macOS a Ubuntu/Chrome porque WhatsApp
+        // ha venido limitando agresivamente el sync histórico para clientes
+        // marcados como "Desktop Mac". Ubuntu/Chrome tiende a recibir más
+        // batches de history (reportes 2026 de la comunidad Baileys).
+        browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: true,
-        printQRInTerminal: false,
+        // Aceptar TODO mensaje histórico que WhatsApp envíe (Baileys 6.7+).
+        // Sin esto, default puede filtrar mensajes "antiguos" del sync.
+        shouldSyncHistoryMessage: () => true,
+        // Cuántos chats máximo cachear en memoria de mensajes recientes
+        // (Baileys defaultea a 1000; subimos para no perder por LRU).
         markOnlineOnConnect: false,
+        printQRInTerminal: false,
         logger: pinoLogger,
         generateHighQualityLinkPreview: false,
         getMessage: async (key) => {
@@ -226,9 +235,17 @@ async function connectWithRetry() {
 }
 
 // ─── RECOLECTAR HISTORIAL SINCRONIZADO ──────────────────────
+// `lastBatchAt` rastrea cuándo llegó el último batch. Usado por
+// waitForHistorySync para saber si WhatsApp dejó de mandar batches.
+let lastBatchAt = 0;
+let totalBatches = 0;
+let isLatestSeen = false;
+
 function setupHistorySync(socket) {
     socket.ev.on('messaging-history.set', ({ messages, contacts, isLatest }) => {
         let batchIndividual = 0;
+        totalBatches++;
+        lastBatchAt = Date.now();
 
         for (const msg of messages) {
             const jid = msg.key?.remoteJid;
@@ -249,13 +266,17 @@ function setupHistorySync(socket) {
         }
 
         logger.info(
-            `📥 Sync batch: ${batchIndividual} msgs individuales ` +
+            `📥 Sync batch #${totalBatches}: ${batchIndividual} msgs individuales ` +
             `(${syncedMessages.size} chats, ${totalSyncedMsgs} msgs total)` +
-            `${isLatest ? ' — ÚLTIMO BATCH' : ''}`
+            `${isLatest ? ' — flag isLatest=true' : ''}`
         );
 
+        // NO marcamos syncComplete inmediatamente — WhatsApp suele mandar
+        // batches adicionales DESPUÉS del isLatest=true (con minutos de
+        // delay). Solo marcamos que vimos el flag; waitForHistorySync
+        // decidirá cuándo cortar basado en inactividad.
         if (isLatest) {
-            syncComplete = true;
+            isLatestSeen = true;
         }
     });
 
@@ -279,19 +300,62 @@ function setupHistorySync(socket) {
 }
 
 // ─── ESPERAR A QUE TERMINE EL SYNC ─────────────────────────
-async function waitForHistorySync() {
-    logger.info(`⏳ Esperando sincronización de historial (máx ${Math.round(SYNC_TIMEOUT_MS / 1000)}s)...`);
-    const start = Date.now();
+// Estrategia (2026-04-26): WhatsApp Multi-device tiende a mandar batches
+// de history en oleadas SEPARADAS. El flag `isLatest=true` del primer
+// batch NO significa "no vienen más" — significa "este batch es el más
+// reciente del lote actual". Se han observado batches adicionales con
+// chats más viejos hasta 5-10 min después.
+//
+// Nueva lógica: esperamos hasta que:
+//   (a) se alcance SYNC_TIMEOUT_MS total, O
+//   (b) hayan pasado SYNC_QUIET_MS sin recibir NINGÚN batch nuevo
+//       (indicador robusto de que WhatsApp ya no manda nada más).
+const SYNC_QUIET_MS = parseInt(process.env.SYNC_QUIET_MS || '120000', 10); // 2 min de silencio = sync terminado
 
-    while (!syncComplete && (Date.now() - start) < SYNC_TIMEOUT_MS) {
-        await sleep(3000);
-        if (!syncComplete) {
-            logger.info(`   ... ${syncedMessages.size} chats, ${totalSyncedMsgs} msgs hasta ahora`);
+async function waitForHistorySync() {
+    logger.info(
+        `⏳ Esperando sincronización de historial ` +
+        `(máx ${Math.round(SYNC_TIMEOUT_MS / 1000)}s · corte por silencio: ` +
+        `${Math.round(SYNC_QUIET_MS / 1000)}s sin nuevos batches)...`
+    );
+    const start = Date.now();
+    lastBatchAt = 0;
+    totalBatches = 0;
+    isLatestSeen = false;
+
+    while ((Date.now() - start) < SYNC_TIMEOUT_MS) {
+        await sleep(5000);
+
+        // Heartbeat cada 5s
+        const elapsed = Math.round((Date.now() - start) / 1000);
+        const timeSinceLastBatch = lastBatchAt > 0
+            ? Math.round((Date.now() - lastBatchAt) / 1000)
+            : null;
+
+        logger.info(
+            `   ... ${syncedMessages.size} chats, ${totalSyncedMsgs} msgs ` +
+            `(batches: ${totalBatches}, elapsed: ${elapsed}s, ` +
+            `last batch: ${timeSinceLastBatch !== null ? timeSinceLastBatch + 's atrás' : 'aún no'})`
+        );
+
+        // Condición de corte: ya vimos isLatest Y pasaron SYNC_QUIET_MS
+        // sin nuevos batches. Doble validación evita cortar demasiado pronto.
+        if (isLatestSeen && lastBatchAt > 0 &&
+            (Date.now() - lastBatchAt) >= SYNC_QUIET_MS) {
+            syncComplete = true;
+            logger.info(
+                `   ✓ ${Math.round(SYNC_QUIET_MS / 1000)}s sin nuevos batches después de isLatest. ` +
+                `Asumiendo sync terminado.`
+            );
+            break;
         }
     }
 
     if (!syncComplete) {
-        logger.warn('⚠️  Timeout de sync — continuando con los mensajes disponibles');
+        logger.warn(
+            `⚠️  Timeout de sync (${Math.round(SYNC_TIMEOUT_MS / 1000)}s) — ` +
+            `continuando con los ${totalSyncedMsgs} mensajes disponibles`
+        );
     }
 
     logger.info('═══════════════════════════════════════════');
@@ -477,6 +541,9 @@ async function runDaemonMode() {
         syncedContacts.clear();
         syncComplete = false;
         totalSyncedMsgs = 0;
+        lastBatchAt = 0;
+        totalBatches = 0;
+        isLatestSeen = false;
 
         logger.info(`✅ Job ${job.action} ${result.status}.`);
         logger.info('   Esperando próximo job...');
