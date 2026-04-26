@@ -54,6 +54,12 @@ let isShuttingDown = false;
 // Acumulador de mensajes del history sync
 const syncedMessages = new Map(); // jid -> WAMessage[]
 const syncedContacts = new Map(); // jid -> pushName
+// `syncedChats` = lista COMPLETA de chats que WhatsApp reporta vía
+// chats.set/chats.upsert (lo que la app web usa para la lista lateral).
+// Es la fuente de verdad real de "qué chats existen", independiente de
+// si messaging-history.set trajo mensajes para ellos. Permite indexar
+// los 12k chats reales aunque WhatsApp solo entregue mensajes para 471.
+const syncedChats = new Map(); // jid -> { name, conversationTimestamp, unreadCount, archived }
 let syncComplete = false;
 let totalSyncedMsgs = 0;
 
@@ -291,10 +297,74 @@ function setupHistorySync(socket) {
         }
     });
 
-    // Capturar pushNames de contacts.update
+    // Capturar pushNames de contacts.update + agregar al store de chats
+    // si todavía no estaba (algunos chats solo aparecen vía contacts).
     socket.ev.on('contacts.update', (updates) => {
         for (const u of updates) {
             if (u.id && u.notify) syncedContacts.set(u.id, u.notify);
+        }
+    });
+    socket.ev.on('contacts.upsert', (contacts) => {
+        for (const c of contacts) {
+            if (c.id && c.notify) syncedContacts.set(c.id, c.notify);
+        }
+    });
+
+    // ─── DESCUBRIR TODOS LOS CHATS (no solo los con mensajes) ──
+    // chats.set/chats.upsert traen la lista COMPLETA de conversaciones
+    // que el cliente tiene en WhatsApp, con metadata mínima
+    // (last_message_at, unreadCount, name). NO depende de si
+    // messaging-history.set trajo mensajes para ese chat.
+    function _registerChat(c) {
+        const jid = c.id;
+        if (!jid || jid === 'status@broadcast') return;
+        if (jid.endsWith('@g.us')) return;          // grupos fuera
+        if (jid.endsWith('@broadcast')) return;
+        if (jid.endsWith('@newsletter')) return;
+        if (jid.endsWith('@lid')) return;           // LIDs no son teléfonos
+
+        const existing = syncedChats.get(jid) || {};
+        // conversationTimestamp viene en segundos UNIX (number o BigInt).
+        const ts = c.conversationTimestamp != null
+            ? Number(c.conversationTimestamp)
+            : existing.conversationTimestamp;
+        const name = c.name || c.notify || existing.name || null;
+        syncedChats.set(jid, {
+            name,
+            conversationTimestamp: ts,
+            unreadCount: c.unreadCount ?? existing.unreadCount,
+            archived: c.archived ?? existing.archived,
+        });
+    }
+
+    socket.ev.on('chats.set', ({ chats, isLatest }) => {
+        for (const c of chats) _registerChat(c);
+        logger.info(
+            `📇 chats.set: ${chats.length} chats (total descubiertos: ${syncedChats.size})` +
+            `${isLatest ? ' — flag isLatest=true' : ''}`
+        );
+        // Marca actividad para waitForHistorySync (descubrir más chats
+        // cuenta como progreso de sync).
+        lastBatchAt = Date.now();
+        totalBatches++;
+    });
+
+    socket.ev.on('chats.upsert', (chats) => {
+        for (const c of chats) _registerChat(c);
+        if (chats.length > 0) {
+            logger.info(
+                `📇 chats.upsert: +${chats.length} (total descubiertos: ${syncedChats.size})`
+            );
+            lastBatchAt = Date.now();
+        }
+    });
+
+    socket.ev.on('chats.update', (updates) => {
+        for (const c of updates) {
+            if (!c.id) continue;
+            // updates pueden actualizar conversationTimestamp/unreadCount
+            // de chats ya descubiertos. Mantenemos el merge.
+            _registerChat(c);
         }
     });
 }
@@ -333,9 +403,10 @@ async function waitForHistorySync() {
             : null;
 
         logger.info(
-            `   ... ${syncedMessages.size} chats, ${totalSyncedMsgs} msgs ` +
-            `(batches: ${totalBatches}, elapsed: ${elapsed}s, ` +
-            `last batch: ${timeSinceLastBatch !== null ? timeSinceLastBatch + 's atrás' : 'aún no'})`
+            `   ... ${syncedChats.size} chats descubiertos · ` +
+            `${syncedMessages.size} con mensajes (${totalSyncedMsgs} msgs total) · ` +
+            `batches: ${totalBatches}, elapsed: ${elapsed}s, ` +
+            `last batch: ${timeSinceLastBatch !== null ? timeSinceLastBatch + 's atrás' : 'aún no'}`
         );
 
         // Condición de corte: ya vimos isLatest Y pasaron SYNC_QUIET_MS
@@ -360,9 +431,11 @@ async function waitForHistorySync() {
 
     logger.info('═══════════════════════════════════════════');
     logger.info(`✅ SYNC FINALIZADO:`);
-    logger.info(`   Chats individuales: ${syncedMessages.size}`);
+    logger.info(`   Chats descubiertos (lista completa): ${syncedChats.size}`);
+    logger.info(`   Chats con mensajes: ${syncedMessages.size}`);
     logger.info(`   Mensajes totales: ${totalSyncedMsgs}`);
     logger.info(`   Contactos con nombre: ${syncedContacts.size}`);
+    logger.info(`   Total batches recibidos: ${totalBatches}`);
     logger.info('═══════════════════════════════════════════');
 }
 
@@ -539,6 +612,7 @@ async function runDaemonMode() {
         // Reset estado global del sync para el próximo job.
         syncedMessages.clear();
         syncedContacts.clear();
+        syncedChats.clear();
         syncComplete = false;
         totalSyncedMsgs = 0;
         lastBatchAt = 0;
@@ -616,13 +690,20 @@ async function runIndexMode() {
     const extractor = new Extractor(sock, db, CONFIG);
     const runId = await db.createExtractionRun();
 
-    const chats = [...syncedMessages.entries()].map(([jid, msgs]) => ({
+    // FUENTE DE VERDAD: syncedChats (lista completa de WhatsApp).
+    // Si hubiera mensajes en syncedMessages para un chat, los pasamos
+    // como hint para mejor metadata; si no, usamos solo conversationTimestamp.
+    const chats = [...syncedChats.entries()].map(([jid, meta]) => ({
         jid,
-        name: syncedContacts.get(jid) || jid.replace('@s.whatsapp.net', ''),
-        messages: msgs,
+        name: meta.name || syncedContacts.get(jid) || jid.replace('@s.whatsapp.net', ''),
+        messages: syncedMessages.get(jid) || [],
+        chatMeta: meta,
     }));
 
-    logger.info(`Total chats sincronizados: ${chats.length}`);
+    logger.info(
+        `Total chats descubiertos: ${chats.length} ` +
+        `(con mensajes: ${[...syncedMessages.keys()].filter(j => syncedChats.has(j)).length})`
+    );
     await db.updateExtractionRun(runId, { total_chats: chats.length, status: 'running' });
 
     let indexed = 0;
@@ -636,7 +717,7 @@ async function runIndexMode() {
         try {
             const result = await extractor.indexChatMetadata(
                 chat.jid, chat.name, chat.messages, runId,
-                { cutoffIso: EXTRACTION_CUTOFF_DATE }
+                { cutoffIso: EXTRACTION_CUTOFF_DATE, chatMeta: chat.chatMeta }
             );
             if (!result) {
                 empty++;
@@ -698,13 +779,22 @@ async function runExtractMode(options = {}) {
     const runId = await db.createExtractionRun();
 
     try {
-        // Map del sync para acceso rápido por jid
+        // Map del sync para acceso rápido por jid. Combinamos ambas
+        // fuentes: chats descubiertos (chats.set) + mensajes recibidos
+        // (messaging-history.set). Un chat puede estar en una pero no
+        // en la otra — para EXTRACT necesitamos el chat conocido aunque
+        // no haya mensajes en sync (vamos a pedirlos con fetchMessageHistory).
+        const knownJids = new Set([
+            ...syncedChats.keys(),
+            ...syncedMessages.keys(),
+        ]);
         const syncedByJid = new Map();
-        for (const [jid, msgs] of syncedMessages.entries()) {
+        for (const jid of knownJids) {
+            const meta = syncedChats.get(jid);
             syncedByJid.set(jid, {
                 jid,
-                name: syncedContacts.get(jid) || jid.replace('@s.whatsapp.net', ''),
-                messages: msgs,
+                name: (meta && meta.name) || syncedContacts.get(jid) || jid.replace('@s.whatsapp.net', ''),
+                messages: syncedMessages.get(jid) || [],
             });
         }
 
@@ -728,16 +818,34 @@ async function runExtractMode(options = {}) {
                 `   Rango de prioridad: #${queue[0].extract_priority} → ` +
                 `#${queue[queue.length-1].extract_priority}`
             );
+            let skippedNoSync = 0;
+            let skippedNoMsgs = 0;
             for (const row of queue) {
                 const fromSync = syncedByJid.get(row.chat_id);
                 if (!fromSync) {
-                    logger.warn(
-                        `   ⚠️  Chat indexado #${row.extract_priority} (${row.whatsapp_name}) ` +
-                        `no apareció en este sync. Lo dejamos pendiente para próximo reescaneo.`
-                    );
+                    // El chat está indexado en DB pero WhatsApp NO lo
+                    // mencionó en este sync (ni siquiera en chats.set).
+                    // Imposible procesar — queda pendiente para próximo
+                    // reescaneo donde WhatsApp tal vez lo incluya.
+                    skippedNoSync++;
+                    continue;
+                }
+                if (!fromSync.messages || fromSync.messages.length === 0) {
+                    // El chat aparece en chats.set pero WhatsApp no entregó
+                    // mensajes. fetchMessageHistory requiere un mensaje
+                    // ancla para paginar hacia atrás, así que sin mensajes
+                    // iniciales no hay manera de descargarlos. Queda pendiente.
+                    skippedNoMsgs++;
                     continue;
                 }
                 targetChats.push(fromSync);
+            }
+            if (skippedNoSync > 0 || skippedNoMsgs > 0) {
+                logger.warn(
+                    `   ⚠️  Saltados ${skippedNoSync + skippedNoMsgs} chats: ` +
+                    `${skippedNoSync} no en sync actual · ${skippedNoMsgs} sin mensajes en sync. ` +
+                    `Quedan 'indexado' para próximos reescaneos.`
+                );
             }
         }
         // ─── MODO LEGACY: usar el sync directo + filtros viejos ──

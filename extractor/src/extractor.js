@@ -68,31 +68,21 @@ class Extractor {
     // procesables); devuelve metadata si se guardó.
     async indexChatMetadata(jid, chatName, messages, runId, options = {}) {
         const cutoffIso = options.cutoffIso;  // ej. '2026-03-20' (interpretado en hora Bogotá)
-        // Cutoff INCLUSIVO en HORA BOGOTÁ (UTC-5, sin DST). '2026-03-20' =
-        // "todo el 20 de marzo hora Bogotá y antes entran".
-        //   Inicio 21-mar Bogotá = 2026-03-21T00:00:00-05:00 = 2026-03-21T05:00:00Z
-        // El comparador `lastMessageAt >= cutoffEnd` excluye desde ese
-        // instante en adelante. Así abarcamos las 24h del día indicado
-        // (Colombia no usa DST, offset es fijo -05:00).
+        const chatMeta = options.chatMeta || null;  // del syncedChats
+        // Cutoff INCLUSIVO en HORA BOGOTÁ (UTC-5, sin DST).
         let cutoffEnd = null;
         if (cutoffIso) {
-            // Parseo defensivo: aceptamos 'YYYY-MM-DD' o ISO completo.
             const m = /^(\d{4}-\d{2}-\d{2})/.exec(cutoffIso.trim());
             if (!m) {
                 throw new Error(`EXTRACTION_CUTOFF_DATE inválido: ${cutoffIso}`);
             }
-            // Construir 00:00 -05:00 del DÍA SIGUIENTE.
             const [y, mo, d] = m[1].split('-').map(Number);
-            // UTC equivalente: día siguiente 05:00 UTC.
             cutoffEnd = new Date(Date.UTC(y, mo - 1, d + 1, 5, 0, 0));
             if (Number.isNaN(cutoffEnd.getTime())) {
                 throw new Error(`EXTRACTION_CUTOFF_DATE inválido: ${cutoffIso}`);
             }
         }
         const contactNumber = jid.replace('@s.whatsapp.net', '');
-
-        const deduped = this._deduplicateMessages(messages);
-        if (deduped.length === 0) return null;
 
         let firstMessageAt = null;
         let lastMessageAt = null;
@@ -101,24 +91,40 @@ class Extractor {
         let docCount = 0;
         let total = 0;
 
-        for (const msg of deduped) {
-            const ts = msg.messageTimestamp
-                ? new Date(Number(msg.messageTimestamp) * 1000)
-                : null;
-            if (!ts) continue;
-            total++;
-            if (!firstMessageAt || ts < firstMessageAt) firstMessageAt = ts;
-            if (!lastMessageAt || ts > lastMessageAt) lastMessageAt = ts;
-
-            // Conteos rápidos por tipo (sin desempacar el mensaje completo).
-            const c = this._unwrapMessage(msg.message);
-            if (!c) continue;
-            if (c.audioMessage) audioCount++;
-            else if (c.imageMessage) imageCount++;
-            else if (c.documentMessage || c.documentWithCaptionMessage) docCount++;
+        // Camino A: si tenemos mensajes en memoria, calculamos metadatos
+        // precisos a partir de ellos.
+        if (messages && messages.length > 0) {
+            const deduped = this._deduplicateMessages(messages);
+            for (const msg of deduped) {
+                const ts = msg.messageTimestamp
+                    ? new Date(Number(msg.messageTimestamp) * 1000)
+                    : null;
+                if (!ts) continue;
+                total++;
+                if (!firstMessageAt || ts < firstMessageAt) firstMessageAt = ts;
+                if (!lastMessageAt || ts > lastMessageAt) lastMessageAt = ts;
+                const c = this._unwrapMessage(msg.message);
+                if (!c) continue;
+                if (c.audioMessage) audioCount++;
+                else if (c.imageMessage) imageCount++;
+                else if (c.documentMessage || c.documentWithCaptionMessage) docCount++;
+            }
         }
 
-        if (total === 0 || !lastMessageAt) return null;
+        // Camino B: si NO tenemos mensajes pero sí metadata de chats.set,
+        // usamos conversationTimestamp como last_message_at. total=0
+        // porque no sabemos cuántos mensajes tiene (los descubriremos
+        // recién al hacer EXTRACT con fetchMessageHistory).
+        if (!lastMessageAt && chatMeta && chatMeta.conversationTimestamp) {
+            lastMessageAt = new Date(Number(chatMeta.conversationTimestamp) * 1000);
+        }
+        if (!firstMessageAt && lastMessageAt) {
+            firstMessageAt = lastMessageAt;
+        }
+
+        // Si después de ambos caminos seguimos sin last_message_at,
+        // descartamos el chat (no podemos ordenarlo por prioridad).
+        if (!lastMessageAt) return null;
 
         // Cutoff: si el último mensaje del chat cae en o después del día
         // siguiente al cutoff, ignoramos el chat completo. Decisión de
