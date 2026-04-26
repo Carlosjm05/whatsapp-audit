@@ -721,24 +721,37 @@ async function runIndexMode() {
     const extractor = new Extractor(sock, db, CONFIG);
     const runId = await db.createExtractionRun();
 
-    // FUENTE DE VERDAD: syncedChats (lista completa de WhatsApp).
-    // Si hubiera mensajes en syncedMessages para un chat, los pasamos
-    // como hint para mejor metadata; si no, usamos solo conversationTimestamp.
-    const chats = [...syncedChats.entries()].map(([jid, meta]) => ({
-        jid,
-        name: meta.name || syncedContacts.get(jid) || jid.replace('@s.whatsapp.net', ''),
-        messages: syncedMessages.get(jid) || [],
-        chatMeta: meta,
-    }));
+    // FUENTE UNIFICADA: chats.set (lista oficial de WhatsApp) UNION
+    // syncedMessages (chats con mensajes, aunque WhatsApp no los listó
+    // explícitamente). Algunos chats antiguos solo aparecen vía mensajes
+    // sueltos en messaging-history.set sin estar en chats.set — los
+    // recuperamos acá para no perderlos.
+    const allJids = new Set([
+        ...syncedChats.keys(),
+        ...syncedMessages.keys(),
+    ]);
 
-    // Conteo eficiente: iteramos el set chico (chats con mensajes ~471)
-    // y verificamos pertenencia en el grande (chats descubiertos ~12k).
-    let chatsWithMsgs = 0;
-    for (const jid of syncedMessages.keys()) {
-        if (syncedChats.has(jid)) chatsWithMsgs++;
-    }
+    const chats = [...allJids].map(jid => {
+        const meta = syncedChats.get(jid) || null;
+        const msgs = syncedMessages.get(jid) || [];
+        return {
+            jid,
+            name: (meta && meta.name) || syncedContacts.get(jid) || jid.replace('@s.whatsapp.net', ''),
+            messages: msgs,
+            chatMeta: meta,  // puede ser null si solo apareció vía mensajes
+        };
+    });
+
+    // Conteos para reportar al usuario.
+    const onlyChatsSet = [...syncedChats.keys()].filter(j => !syncedMessages.has(j)).length;
+    const onlyMessages = [...syncedMessages.keys()].filter(j => !syncedChats.has(j)).length;
+    const both = chats.length - onlyChatsSet - onlyMessages;
     logger.info(
-        `Total chats descubiertos: ${chats.length} (con mensajes en sync: ${chatsWithMsgs})`
+        `Total chats únicos a procesar: ${chats.length}`
+    );
+    logger.info(
+        `   Desglose: ${both} en ambas fuentes · ` +
+        `${onlyChatsSet} solo chats.set · ${onlyMessages} solo en mensajes`
     );
     await db.updateExtractionRun(runId, { total_chats: chats.length, status: 'running' });
 
