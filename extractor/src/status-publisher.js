@@ -44,19 +44,31 @@ function getClient() {
 }
 
 // Wrap silencioso: si redis falla, NO rompe el extractor.
+// Pero loggeamos el PRIMER error para que ops sepa que Redis está caído
+// (el guard _loggedError en getClient evita spam posterior).
 async function safeSet(key, value, ttlSec) {
     try {
         const c = getClient();
         if (ttlSec) await c.set(key, value, 'EX', ttlSec);
         else await c.set(key, value);
-    } catch (_) { /* silent */ }
+    } catch (err) {
+        if (client && !client._setSetErrorLogged) {
+            console.warn(`[status-publisher] safeSet(${key}) falló: ${err.message}`);
+            client._setSetErrorLogged = true;
+        }
+    }
 }
 
 async function safeDel(...keys) {
     try {
         const c = getClient();
         await c.del(...keys);
-    } catch (_) { /* silent */ }
+    } catch (err) {
+        if (client && !client._setDelErrorLogged) {
+            console.warn(`[status-publisher] safeDel(${keys.join(',')}) falló: ${err.message}`);
+            client._setDelErrorLogged = true;
+        }
+    }
 }
 
 // ─── PUBLICAR QR ────────────────────────────────────────────
