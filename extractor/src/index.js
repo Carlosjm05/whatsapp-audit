@@ -299,7 +299,16 @@ function setupHistorySync(socket) {
         for (const msg of messages) {
             const jid = msg.key?.remoteJid;
             if (!jid || jid === 'status@broadcast') continue;
+            // Filtros consistentes con _registerChat: solo procesamos chats
+            // individuales reales (@s.whatsapp.net o sin sufijo numérico).
+            // @lid (Linked IDs de comunidades/canales) NO son leads y dejan
+            // basura en el INDEX si no se filtran acá también.
             if (jid.endsWith('@g.us')) continue;
+            if (jid.endsWith('@lid')) continue;
+            if (jid.endsWith('@broadcast')) continue;
+            if (jid.endsWith('@newsletter')) continue;
+            if (jid.endsWith('@status')) continue;
+            if (jid.endsWith('@call')) continue;
 
             if (!syncedMessages.has(jid)) syncedMessages.set(jid, []);
             syncedMessages.get(jid).push(msg);
@@ -339,7 +348,13 @@ function setupHistorySync(socket) {
         if (type !== 'notify') return;
         for (const msg of messages) {
             const jid = msg.key?.remoteJid;
-            if (!jid || jid === 'status@broadcast' || jid.endsWith('@g.us')) continue;
+            if (!jid || jid === 'status@broadcast') continue;
+            if (jid.endsWith('@g.us')) continue;
+            if (jid.endsWith('@lid')) continue;
+            if (jid.endsWith('@broadcast')) continue;
+            if (jid.endsWith('@newsletter')) continue;
+            if (jid.endsWith('@status')) continue;
+            if (jid.endsWith('@call')) continue;
             if (!syncedMessages.has(jid)) syncedMessages.set(jid, []);
             syncedMessages.get(jid).push(msg);
         }
