@@ -367,17 +367,41 @@ def generate_unified_transcripts():
         total_audios = 0
         total_audios_failed = 0
         
+        # Detectar mensaje automático del bot de Ortiz.
+        # Patrón: "Hola 👋 estás comunicado con el equipo de ORTIZ EXPERTOS..."
+        # Lo marcamos en el transcript para que Claude sepa diferenciarlo
+        # de una respuesta humana real, y para que el analyzer (que
+        # consume el transcript) excluya estos del cálculo de SLA.
+        BOT_PATTERNS_RE = re.compile(
+            r"est[áa]s\s+comunicado\s+con\s+el\s+equipo|"
+            r"ORTIZ\s+EXPERTOS\s+EN\s+FINCA\s+RA[ÍI]Z|"
+            r"mientras\s+respondemos\s+tu\s+mensaje|"
+            r"te\s+invitamos\s+a\s+visitar\s+nuestra\s+p[áa]gina|"
+            r"ortizfincaraiz\.com",
+            re.IGNORECASE,
+        )
+
         for msg in messages:
             ts = msg['timestamp'].strftime('%Y-%m-%d %H:%M') if msg['timestamp'] else '????-??-?? ??:??'
             sender_label = 'LEAD' if msg['sender'] == 'lead' else 'ASESOR'
-            
+
             if msg['sender'] == 'lead':
                 total_from_lead += 1
             else:
                 total_from_asesor += 1
-            
+
+            # Si el mensaje del asesor es la auto-respuesta del bot,
+            # marcarlo como (auto-bot) para que el parser lo identifique.
+            is_bot_msg = (
+                msg['sender'] == 'asesor' and msg['message_type'] == 'text'
+                and msg['body'] and BOT_PATTERNS_RE.search(msg['body'])
+            )
+
             if msg['message_type'] == 'text' and msg['body']:
-                lines.append(f"[{ts}] {sender_label}: {msg['body']}")
+                if is_bot_msg:
+                    lines.append(f"[{ts}] {sender_label} (auto-bot): {msg['body']}")
+                else:
+                    lines.append(f"[{ts}] {sender_label}: {msg['body']}")
             
             elif msg['message_type'] == 'audio':
                 total_audios += 1

@@ -117,7 +117,26 @@ y pasa los timestamps de cada violación como hint. Debes:
 FORMATO DE TRANSCRIPCIÓN:
 [YYYY-MM-DD HH:MM] ROL (tipo): contenido
 ROL ∈ {{LEAD, ASESOR}}. Tipo: vacío (texto), "(audio Ns)", "(imagen)",
-"(documento)", etc.
+"(documento)", "(auto-bot)" (auto-respuesta del WhatsApp Business
+de Ortiz, detectada por el transcriber).
+
+⚠️ MENSAJES MARCADOS "(auto-bot)" NO son respuestas humanas reales.
+Son la auto-respuesta del WhatsApp Business que se dispara automático
+al recibir cualquier mensaje. Patrón típico:
+  "Hola 👋 estás comunicado con el equipo de ORTIZ EXPERTOS EN FINCA
+   RAÍZ ... Mientras respondemos tu mensaje te invitamos a visitar
+   nuestra página web https://ortizfincaraiz.com/"
+
+REGLAS sobre auto-bot:
+- NO cuentan como respuesta del asesor para el SLA de 5 min.
+- NO cuentan como "envió info del proyecto" — es genérica, no
+  personalizada al lead.
+- NO cuentan como contacto humano. Si el chat tiene SOLO bot + lead
+  (sin asesor humano), el lead fue ABANDONADO → final_status apropiado:
+  "ghosteado_por_asesor" o "se_enfrio".
+- SÍ pueden mencionarse en errors_list si: "bot respondió pero asesor
+  humano nunca apareció" o "asesor confió en el bot sin personalizar
+  después".
 
 TU MISIÓN:
 Producir UN JSON válido con EXACTAMENTE las claves del esquema. Sin

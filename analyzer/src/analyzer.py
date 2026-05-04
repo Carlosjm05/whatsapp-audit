@@ -93,6 +93,41 @@ class ParsedMsg:
     role: str
     is_audio: bool
     body: str
+    is_bot: bool = False  # True si es respuesta automática del bot de Ortiz
+
+
+# Detección del mensaje automático del WhatsApp Business de Ortiz Finca
+# Raíz. Patrones específicos detectados en producción (2026-05-04):
+#   "Hola 👋 estás comunicado con el equipo de  ORTIZ EXPERTOS EN FINCA RAÍZ"
+#   "Mientras respondemos tu mensaje te invitamos a visitar nuestra página web"
+#   URL ortizfincaraiz.com
+#
+# Este mensaje se dispara automáticamente al recibir CUALQUIER mensaje
+# del lead, antes de que un humano siquiera lo vea. Si lo contamos como
+# "primera respuesta del asesor" → mediana de SLA queda en 0 minutos
+# falsamente. CRÍTICO excluirlo de las métricas de tiempo de respuesta.
+_BOT_PATTERNS = [
+    r"est[áa]s\s+comunicado\s+con\s+el\s+equipo\s+de",
+    r"ORTIZ\s+EXPERTOS\s+EN\s+FINCA\s+RA[ÍI]Z",
+    r"mientras\s+respondemos\s+tu\s+mensaje",
+    r"te\s+invitamos\s+a\s+visitar\s+nuestra\s+p[áa]gina",
+    r"ortizfincaraiz\.com",
+    # Variantes vistas en otros bots:
+    r"este\s+es\s+un\s+mensaje\s+autom[áa]tico",
+    r"en\s+breve\s+te\s+atender(?:emos|án)",
+]
+_BOT_RE = re.compile("|".join(_BOT_PATTERNS), re.IGNORECASE)
+
+
+def is_bot_message(body: str) -> bool:
+    """True si el mensaje del asesor es la respuesta automática del bot.
+    Solo se evalúa contenido textual; los audios/imágenes nunca son bots.
+    Detección por patrones (regex). Si el mensaje contiene 2+ patrones
+    distintos del bot, alta confianza. Con 1 sola coincidencia también
+    cuenta — son frases muy específicas que no aparecen en chat humano."""
+    if not body:
+        return False
+    return bool(_BOT_RE.search(body))
 
 
 def parse_transcript(text: str) -> List[ParsedMsg]:
@@ -106,11 +141,22 @@ def parse_transcript(text: str) -> List[ParsedMsg]:
         except ValueError:
             continue
         meta = (m.group("meta") or "").lower()
+        body = m.group("body")
+        role = m.group("role")
+        # Detección de bot:
+        # 1. Marca explícita en el transcript "(auto-bot)" — la pone el
+        #    transcriber al unificar mensajes.
+        # 2. Detección por contenido (regex) — fallback si no hay marca
+        #    explícita o el transcript fue generado con código viejo.
+        is_bot = (role == "ASESOR") and (
+            "auto-bot" in meta or is_bot_message(body)
+        )
         out.append(ParsedMsg(
             ts=ts,
-            role=m.group("role"),
+            role=role,
             is_audio="audio" in meta,
-            body=m.group("body"),
+            body=body,
+            is_bot=is_bot,
         ))
     return out
 
@@ -129,7 +175,11 @@ def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
             "advisor_audios": 0, "lead_audios": 0,
         }
     total = len(msgs)
-    advisor = [m for m in msgs if m.role == "ASESOR"]
+    # `advisor` excluye bots para que conteos y promedios reflejen
+    # actividad humana real. `advisor_with_bots` se mantiene aparte por
+    # si alguna métrica lo necesita.
+    advisor_with_bots = [m for m in msgs if m.role == "ASESOR"]
+    advisor = [m for m in advisor_with_bots if not m.is_bot]
     lead = [m for m in msgs if m.role == "LEAD"]
     first_ts = msgs[0].ts
     last_ts = msgs[-1].ts
@@ -155,21 +205,22 @@ def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
             break
 
     # `first_response_minutes` mide el tiempo entre el ÚLTIMO mensaje
-    # del lead ANTES de la primera respuesta del asesor (no desde el
-    # PRIMERO). Esto refleja el tiempo de respuesta REAL — si un lead
-    # escribió hace 1 año, el asesor lo ignoró, y el lead reactivó la
-    # conversación ahora con respuesta inmediata, NO debería marcarse
-    # como "respondió en 525.600 min" sino como "respondió en X min
-    # desde la reactivación".
-    # Caso patológico real (2026-05-04 audit): max=79410 min (55 días)
-    # por exactamente este patrón. Ahora se mide correctamente.
+    # del lead ANTES de la primera respuesta del asesor HUMANO (no desde
+    # el PRIMERO ni contando bots).
+    #
+    # CRITERIOS DE EXCLUSIÓN:
+    # 1. is_bot=True (auto-respuesta de Ortiz): no es asesor real,
+    #    distorsiona el SLA bajándolo a 0 segundos artificialmente.
+    # 2. Caso reactivación: si el lead escribió hace meses sin respuesta
+    #    y ahora reactivó la conversación, mide desde la reactivación
+    #    no desde el primer mensaje.
     first_advisor_idx: Optional[int] = None
     for i, m in enumerate(msgs):
-        if m.role == "ASESOR":
+        if m.role == "ASESOR" and not m.is_bot:
             first_advisor_idx = i
             break
     if first_advisor_idx is not None:
-        # último mensaje LEAD antes de esa respuesta
+        # último mensaje LEAD antes de esa respuesta humana
         last_lead_before_advisor = None
         for m in msgs[:first_advisor_idx]:
             if m.role == "LEAD":
@@ -195,9 +246,15 @@ def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
     REACTIVATION_THRESHOLD_MIN = 480  # 8h horario laboral = "reactivación"
     sla_violations: List[Dict[str, Any]] = []
     reactivation_gaps: List[float] = []  # gaps gigantes informativos
+    bot_responses_count = 0  # auto-respuestas que NO contamos como SLA
     for i in range(1, len(msgs)):
         prev, cur = msgs[i-1], msgs[i]
         if prev.role == "LEAD" and cur.role == "ASESOR":
+            # Si el "asesor" es el bot, NO cuenta como respuesta humana.
+            # Saltamos al siguiente mensaje hasta encontrar uno humano.
+            if cur.is_bot:
+                bot_responses_count += 1
+                continue
             mins, bucket = response_time_minutes(prev.ts, cur.ts)
             if bucket == "sunday":
                 sunday_gaps.append(mins)
@@ -317,6 +374,11 @@ def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
         # Solo informativo — útil para detectar leads que se enfriaron y
         # reactivaron.
         "reactivation_gaps_count": len(reactivation_gaps),
+        # Auto-respuestas del bot detectadas (informativo, no entran al SLA).
+        # Si un chat tiene 5 bot_responses y solo 1 advisor_human → señal
+        # de que el asesor casi no participó (bot predominante).
+        "bot_responses_count": bot_responses_count,
+        "advisor_human_messages": len(advisor),
         # Domingo (separado del SLA, solo informativo):
         "sunday_response_minutes_avg": sunday_avg,
         "sunday_response_count": len(sunday_gaps),
@@ -361,9 +423,24 @@ def _format_hints(metadata: Dict[str, Any], computed: Dict[str, Any],
         "unusual_hours_advisor_count",  # mensajes asesor 1-5am
         "image_markers_count",          # imágenes en el chat
         "document_markers_count",       # documentos en el chat
+        # Bot vs humano — si advisor_human_messages=0 pero bot_responses>0,
+        # NADIE humano respondió, solo el bot. Lead abandonado.
+        "bot_responses_count",
+        "advisor_human_messages",
     ):
         if computed.get(k) is not None:
             lines.append(f"- {k}: {computed[k]}")
+
+    # Alerta crítica: chat donde solo el bot respondió, sin asesor humano.
+    bot_count = computed.get("bot_responses_count", 0) or 0
+    human_count = computed.get("advisor_human_messages", 0) or 0
+    if bot_count > 0 and human_count == 0:
+        lines.append(
+            "- ⚠️ ATENCIÓN: el bot auto-respondió pero NINGÚN asesor humano "
+            "intervino en este chat. Lead abandonado por completo. "
+            "Considera final_status='ghosteado_por_asesor' y "
+            "perdido_por='asesor_sin_seguimiento'."
+        )
 
     # Señal de plantilla: si el asesor repite el mismo inicio de mensaje.
     # Crítico para errors_list ("usó mensaje genérico/plantilla").

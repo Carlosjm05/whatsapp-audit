@@ -20,7 +20,7 @@ from typing import List, Optional
 
 import psycopg2.extras
 
-from .analyzer import ParsedMsg, compute_metrics_from_msgs
+from .analyzer import ParsedMsg, compute_metrics_from_msgs, is_bot_message
 from . import db as _db
 
 
@@ -88,12 +88,17 @@ def _fetch_messages(conversation_id: str) -> List[ParsedMsg]:
             role = "LEAD"
         else:
             continue
+        body = r.get("body") or ""
+        # Auto-respuesta del bot de Ortiz: excluir del cálculo de SLA.
+        # Solo se evalúa para asesores (los leads nunca son bots).
+        is_bot = (role == "ASESOR") and is_bot_message(body)
         msgs.append(
             ParsedMsg(
                 ts=r["timestamp"],
                 role=role,
                 is_audio=(r["message_type"] == "audio"),
-                body=r.get("body") or "",
+                body=body,
+                is_bot=is_bot,
             )
         )
     return msgs
