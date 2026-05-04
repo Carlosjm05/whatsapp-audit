@@ -123,12 +123,16 @@ def _recompute_one(lead_id: str, conversation_id: str) -> bool:
     with _db.cursor() as cur:
         # pg_try_advisory_xact_lock devuelve true si pudo tomar el lock,
         # false si otra transacción ya lo tiene. Hash del UUID a int8.
+        # Alias 'got' para acceder por key (cur es RealDictCursor, devuelve dict).
         cur.execute(
-            "SELECT pg_try_advisory_xact_lock(hashtext(%s)::bigint)",
+            "SELECT pg_try_advisory_xact_lock(hashtext(%s)::bigint) AS got",
             (lead_id,),
         )
-        got_lock = cur.fetchone()
-        if not got_lock or not got_lock[0]:
+        row = cur.fetchone()
+        # row es dict {'got': True/False} con RealDictCursor o tupla con default.
+        got_lock_val = (row.get("got") if isinstance(row, dict)
+                        else (row[0] if row else None))
+        if not got_lock_val:
             log.warning("lead %s tiene lock activo (analyzer corriendo?) — skip",
                         lead_id)
             return False
