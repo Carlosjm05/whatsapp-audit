@@ -89,25 +89,36 @@ export default function ErrorsPage() {
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <KpiCard
+              label="1ra resp. mediana"
+              value={
+                rt.p50_first_response_minutes != null
+                  ? `${Math.round(toNum(rt.p50_first_response_minutes))} min`
+                  : '—'
+              }
+              sub="50% responden en este tiempo o menos"
+              icon={<Clock className="w-5 h-5" />}
+              tone="positive"
+            />
+            <KpiCard
               label="1ra resp. promedio"
               value={
                 rt.avg_first_response_minutes != null
                   ? `${Math.round(toNum(rt.avg_first_response_minutes))} min`
                   : '—'
               }
-              sub="Solo horario laboral"
+              sub="Sin outliers (≤8h horario laboral)"
               icon={<Clock className="w-5 h-5" />}
             />
             <KpiCard
-              label="1ra resp. P95"
+              label="Sin respuesta efectiva"
               value={
-                rt.p95_first_response_minutes != null
-                  ? `${Math.round(toNum(rt.p95_first_response_minutes))} min`
+                rt.leads_sin_respuesta_efectiva != null
+                  ? `${formatNumber(toNum(rt.leads_sin_respuesta_efectiva))}`
                   : '—'
               }
-              sub="95% bajo este tiempo"
+              sub="Leads que esperaron >8h o nunca respondieron"
               icon={<AlertTriangle className="w-5 h-5" />}
-              tone="warning"
+              tone="danger"
             />
             <KpiCard
               label="% sin seguimiento"
@@ -117,16 +128,6 @@ export default function ErrorsPage() {
               sub="Leads sin mensaje de seguimiento"
               icon={<Flame className="w-5 h-5" />}
               tone={pctNoFollowup != null && toNum(pctNoFollowup) > 30 ? 'danger' : 'warning'}
-            />
-            <KpiCard
-              label="Brecha máxima prom."
-              value={
-                rt.avg_longest_gap_hours != null
-                  ? `${toNum(rt.avg_longest_gap_hours).toFixed(1)}h`
-                  : '—'
-              }
-              sub="Silencio más largo"
-              icon={<Users className="w-5 h-5" />}
             />
           </div>
 
@@ -172,7 +173,8 @@ export default function ErrorsPage() {
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-6">
             <ChartCard
               title="Errores más frecuentes"
-              subtitle="Patrones detectados en advisor_scores"
+              subtitle="Categorías agrupadas (variantes textuales unificadas)"
+              height={480}
             >
               {topErrors.length > 0 ? (
                 <ChartBar
@@ -181,6 +183,7 @@ export default function ErrorsPage() {
                   yKey="count"
                   color="#ef4444"
                   horizontal
+                  yAxisWidth={260}
                 />
               ) : (
                 <div className="flex items-center justify-center h-40 text-xs text-slate-400">
@@ -191,7 +194,8 @@ export default function ErrorsPage() {
 
             <ChartCard
               title="Asesores con más errores"
-              subtitle="Total de errores acumulados"
+              subtitle="Total de errores acumulados ('General' = chats sin firma identificada)"
+              height={480}
             >
               {advisorsBad.length > 0 ? (
                 <ChartBar
@@ -200,6 +204,7 @@ export default function ErrorsPage() {
                   yKey="total_errors"
                   color="#f59e0b"
                   horizontal
+                  yAxisWidth={120}
                 />
               ) : (
                 <div className="flex items-center justify-center h-40 text-xs text-slate-400">

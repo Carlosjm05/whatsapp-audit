@@ -501,6 +501,10 @@ export interface ErrorsOverview {
     p95_first_response_minutes?: number | string | null;
     avg_response_minutes?: number | string | null;
     avg_longest_gap_hours?: number | string | null;
+    // Conteos anti-outlier: chats donde el asesor SÍ respondió en ≤8h
+    // vs los que esperaron >8h o nunca respondieron.
+    leads_con_respuesta_efectiva?: number | string | null;
+    leads_sin_respuesta_efectiva?: number | string | null;
     // Métricas de domingo (separadas, no entran al SLA).
     sunday_avg_minutes?: number | string | null;
     sunday_total_responses?: number | string | null;

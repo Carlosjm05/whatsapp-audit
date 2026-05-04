@@ -739,6 +739,16 @@ def persist_analysis(
                     followup_compliance_val = False
 
                 cur.execute("DELETE FROM advisor_scores WHERE lead_id=%s", (lead_id,))
+                # Asesores no identificados se agrupan bajo "General" para que
+                # entren al ranking y métricas. Sin esto, los nulls quedaban
+                # fuera de las queries con WHERE advisor_name IS NOT NULL.
+                _adv_name = (a.get("advisor_name") or "").strip()
+                if not _adv_name:
+                    _adv_name = "General"
+                _adv_involved = a.get("advisors_involved") or []
+                # Si la lista de involucrados está vacía, también marcar General.
+                if not _adv_involved:
+                    _adv_involved = [_adv_name]
                 cur.execute(
                     """INSERT INTO advisor_scores
                          (lead_id, conversation_id,
@@ -751,8 +761,8 @@ def persist_analysis(
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (
                         lead_id, conversation_id,
-                        a.get("advisor_name"),
-                        a.get("advisors_involved") or [],
+                        _adv_name,
+                        _adv_involved,
                         a.get("advisor_phone"),
                         a.get("speed_score"), a.get("qualification_score"),
                         a.get("product_presentation_score"),
