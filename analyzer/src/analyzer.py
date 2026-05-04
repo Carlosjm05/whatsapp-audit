@@ -147,15 +147,37 @@ def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
     sunday_gaps: List[float] = []           # solo domingos (separado)
     longest_gap_hours: Optional[float] = None
 
-    for i, m in enumerate(msgs):
-        if m.role == "LEAD" and first_lead_ts is None:
+    # `first_lead_ts` se mantiene como el PRIMER mensaje del lead en TODA
+    # la conversación (otras métricas lo usan).
+    for m in msgs:
+        if m.role == "LEAD":
             first_lead_ts = m.ts
-        if (m.role == "ASESOR" and first_lead_ts is not None
-                and first_response_minutes is None):
-            mins, bucket = response_time_minutes(first_lead_ts, m.ts)
-            # first_response_minutes es la métrica principal — siempre
-            # usamos el cálculo business. Si fue domingo lo guardamos
-            # también en sunday_gaps para el promedio separado.
+            break
+
+    # `first_response_minutes` mide el tiempo entre el ÚLTIMO mensaje
+    # del lead ANTES de la primera respuesta del asesor (no desde el
+    # PRIMERO). Esto refleja el tiempo de respuesta REAL — si un lead
+    # escribió hace 1 año, el asesor lo ignoró, y el lead reactivó la
+    # conversación ahora con respuesta inmediata, NO debería marcarse
+    # como "respondió en 525.600 min" sino como "respondió en X min
+    # desde la reactivación".
+    # Caso patológico real (2026-05-04 audit): max=79410 min (55 días)
+    # por exactamente este patrón. Ahora se mide correctamente.
+    first_advisor_idx: Optional[int] = None
+    for i, m in enumerate(msgs):
+        if m.role == "ASESOR":
+            first_advisor_idx = i
+            break
+    if first_advisor_idx is not None:
+        # último mensaje LEAD antes de esa respuesta
+        last_lead_before_advisor = None
+        for m in msgs[:first_advisor_idx]:
+            if m.role == "LEAD":
+                last_lead_before_advisor = m
+        if last_lead_before_advisor is not None:
+            mins, bucket = response_time_minutes(
+                last_lead_before_advisor.ts, msgs[first_advisor_idx].ts
+            )
             first_response_minutes = mins
             if bucket == "sunday":
                 sunday_gaps.append(mins)
@@ -164,8 +186,15 @@ def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
     # es violación. Definido por Óscar (2026-04-26): "5 en adelante ya es
     # mucho". Antes era 10 min — al bajar a 5 muchos leads previos quedan
     # con violación. Domingos NO cuentan para SLA (se reportan aparte).
+    #
+    # GAPS DE REACTIVACIÓN (>8h en horario laboral) NO son violaciones
+    # de SLA — son chats donde el asesor ignoró un mensaje y el lead
+    # volvió a escribir días/semanas después. Excluirlos del promedio
+    # da una métrica más realista. Se reportan por separado más abajo.
     SLA_MIN = 5
+    REACTIVATION_THRESHOLD_MIN = 480  # 8h horario laboral = "reactivación"
     sla_violations: List[Dict[str, Any]] = []
+    reactivation_gaps: List[float] = []  # gaps gigantes informativos
     for i in range(1, len(msgs)):
         prev, cur = msgs[i-1], msgs[i]
         if prev.role == "LEAD" and cur.role == "ASESOR":
@@ -173,6 +202,11 @@ def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
             if bucket == "sunday":
                 sunday_gaps.append(mins)
                 continue                    # no entra al promedio business
+            if mins > REACTIVATION_THRESHOLD_MIN:
+                # Gap de reactivación: el lead se cansó y volvió después.
+                # NO entra al promedio ni cuenta como violación SLA.
+                reactivation_gaps.append(mins)
+                continue
             response_gaps.append(mins)
             if mins > SLA_MIN:
                 sla_violations.append({
@@ -278,6 +312,11 @@ def compute_metrics_from_msgs(msgs: List["ParsedMsg"]) -> Dict[str, Any]:
         "advisor_active_hours": active,
         "sla_violations": sla_violations,
         "sla_violations_count": len(sla_violations),
+        # Gaps de reactivación (>8h horario laboral): chats donde el lead
+        # volvió a escribir días/semanas después, NO son violaciones SLA.
+        # Solo informativo — útil para detectar leads que se enfriaron y
+        # reactivaron.
+        "reactivation_gaps_count": len(reactivation_gaps),
         # Domingo (separado del SLA, solo informativo):
         "sunday_response_minutes_avg": sunday_avg,
         "sunday_response_count": len(sunday_gaps),
