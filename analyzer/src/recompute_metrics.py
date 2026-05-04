@@ -215,7 +215,13 @@ def main(argv=None) -> int:
                 log.info("Progreso: %d/%d", i, len(leads))
         except Exception as e:
             fail += 1
-            log.error("lead %s fallo: %s", l["lead_id"], e)
+            # log.exception incluye el traceback completo. Crítico para
+            # debug — antes solo mostraba str(e) que muchas veces era "0"
+            # (IndexError, KeyError) sin contexto útil.
+            log.exception(
+                "lead %s fallo (%s): %s",
+                l["lead_id"], type(e).__name__, e,
+            )
 
     log.info("LISTO. ok=%d fail=%d total=%d", ok, fail, len(leads))
     return 0 if fail == 0 else 1
