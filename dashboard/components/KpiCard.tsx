@@ -33,19 +33,19 @@ const TONE_VALUE: Record<NonNullable<Props['tone']>, string> = {
 
 export default function KpiCard({ label, value, sub, icon, tone = 'default' }: Props) {
   return (
-    <div className={`bg-white rounded-xl shadow-card p-4 sm:p-5 ring-1 ${TONE_RING[tone]} transition hover:shadow-md`}>
-      <div className="flex items-start justify-between gap-3">
+    <div className={`bg-white rounded-xl shadow-card p-3 sm:p-5 ring-1 ${TONE_RING[tone]} transition hover:shadow-md`}>
+      <div className="flex items-start justify-between gap-2 sm:gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider leading-tight">
             {label}
           </div>
-          <div className={`mt-2 text-2xl sm:text-3xl font-bold leading-tight ${TONE_VALUE[tone]} break-words`}>
+          <div className={`mt-1.5 sm:mt-2 text-xl sm:text-3xl font-bold leading-tight ${TONE_VALUE[tone]} break-words`}>
             {value}
           </div>
-          {sub && <div className="mt-1.5 text-[11px] sm:text-xs text-slate-500 leading-snug">{sub}</div>}
+          {sub && <div className="mt-1 sm:mt-1.5 text-[10px] sm:text-xs text-slate-500 leading-snug">{sub}</div>}
         </div>
         {icon && (
-          <div className={`shrink-0 w-10 h-10 rounded-lg flex items-center justify-center ${TONE_BG_ICON[tone]}`}>
+          <div className={`shrink-0 w-8 h-8 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center ${TONE_BG_ICON[tone]}`}>
             {icon}
           </div>
         )}

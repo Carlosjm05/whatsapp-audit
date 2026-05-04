@@ -10,9 +10,9 @@ export default function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="mb-5 sm:mb-6 pb-4 border-b border-slate-200 flex items-end justify-between gap-4 flex-wrap">
-      <div className="min-w-0">
-        <h1 className="text-xl sm:text-2xl font-bold text-slate-900 leading-tight">
+    <div className="mb-5 sm:mb-6 pb-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 sm:gap-4">
+      <div className="min-w-0 flex-1">
+        <h1 className="text-lg sm:text-2xl font-bold text-slate-900 leading-tight">
           {title}
         </h1>
         {subtitle && (
@@ -22,7 +22,7 @@ export default function PageHeader({
         )}
       </div>
       {actions && (
-        <div className="flex items-center gap-2 shrink-0">{actions}</div>
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">{actions}</div>
       )}
     </div>
   );

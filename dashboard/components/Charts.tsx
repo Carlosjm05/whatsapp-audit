@@ -18,7 +18,21 @@ import {
   Funnel,
   LabelList
 } from 'recharts';
-import { ReactNode } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
+
+// Hook para detectar viewport mobile (<640px = breakpoint sm de Tailwind).
+// Usado para ajustar yAxisWidth/labels en charts horizontales — en iPhone
+// (375px) un yAxisWidth=260 deja solo ~80px para barras (ilegible).
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 640);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+  return isMobile;
+}
 
 // Interfaces con propiedades conocidas (FunnelStage, StatusBucket, etc.)
 // no son asignables a Record<string, unknown> porque les falta la index
@@ -51,16 +65,21 @@ export function ChartCard({
   children: ReactNode;
   height?: number;
 }) {
+  const isMobile = useIsMobile();
+  // En mobile reducimos el height para que el chart no domine la pantalla.
+  // Para charts altos (480 — errores frecuentes), bajamos a 360 en mobile
+  // para que aún sea legible pero no requiera scroll vertical eterno.
+  const effectiveHeight = isMobile ? Math.min(height, 360) : height;
   return (
-    <div className="card p-5">
-      <div className="flex items-start justify-between mb-3">
-        <div>
+    <div className="card p-3 sm:p-5">
+      <div className="flex items-start justify-between mb-3 gap-2">
+        <div className="min-w-0 flex-1">
           <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
           {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
         </div>
         {actions}
       </div>
-      <div style={{ width: '100%', height }}>{children}</div>
+      <div style={{ width: '100%', height: effectiveHeight }}>{children}</div>
     </div>
   );
 }
@@ -95,11 +114,18 @@ export function ChartBar({
   horizontal?: boolean;
   yAxisWidth?: number;
 }) {
+  const isMobile = useIsMobile();
   if (!data || data.length === 0) return <EmptyChart />;
+  // En mobile (iPhone ~375px), reducir yAxisWidth a ~110px para que las
+  // barras tengan espacio. También trunca más agresivo.
+  const effectiveYAxisWidth = isMobile
+    ? Math.min(yAxisWidth, 110)
+    : yAxisWidth;
+  const labelMaxLen = isMobile ? 22 : 38;
   // Para horizontal: pre-truncar los labels y filtrar nulos para evitar
   // overlapping en chart de "errores más frecuentes".
   const safeData = horizontal
-    ? data.map((d) => ({ ...d, [xKey]: truncateLabel(d[xKey], 38) }))
+    ? data.map((d) => ({ ...d, [xKey]: truncateLabel(d[xKey], labelMaxLen) }))
     : data;
 
   return (
@@ -116,13 +142,13 @@ export function ChartBar({
         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
         {horizontal ? (
           <>
-            <XAxis type="number" stroke="#64748b" fontSize={12} allowDecimals={false} />
+            <XAxis type="number" stroke="#64748b" fontSize={isMobile ? 10 : 12} allowDecimals={false} />
             <YAxis
               type="category"
               dataKey={xKey}
               stroke="#64748b"
-              fontSize={11}
-              width={yAxisWidth}
+              fontSize={isMobile ? 10 : 11}
+              width={effectiveYAxisWidth}
               interval={0}
               tick={{ fill: '#475569' }}
             />

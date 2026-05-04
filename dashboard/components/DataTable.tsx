@@ -81,7 +81,11 @@ export default function DataTable<T extends Record<string, unknown>>({
 
   return (
     <div className="card overflow-hidden">
-      <div className="overflow-x-auto">
+      {/* Hint visual de scroll horizontal en mobile (la sombra/gradiente
+          a la derecha sugiere que hay más columnas para scrollear). */}
+      <div className="overflow-x-auto relative
+                      [mask-image:linear-gradient(to_right,black_calc(100%-24px),transparent)]
+                      sm:[mask-image:none]">
         <table className="min-w-full text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
