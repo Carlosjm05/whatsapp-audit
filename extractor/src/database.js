@@ -78,8 +78,14 @@ class Database {
     }
 
     async saveConversation(data) {
-        const id = uuidv4();
-        await this.pool.query(
+        // BUG FIX (2026-05-04): cuando el chat ya existía en DB (caso típico
+        // tras INDEX → EXTRACT), ON CONFLICT DO UPDATE preserva el id viejo.
+        // Antes devolvíamos el `uuidv4()` nuevo (que NO se insertó), y luego
+        // saveMessages() fallaba la FK porque ese id no existe en DB.
+        // Solución: RETURNING id para devolver el id REAL (el viejo si fue
+        // UPDATE, el nuevo si fue INSERT).
+        const newId = uuidv4();
+        const result = await this.pool.query(
             `INSERT INTO raw_conversations (
                 id, extraction_run_id, chat_id, phone, whatsapp_name,
                 is_group, total_messages, total_audios, total_images,
@@ -87,6 +93,7 @@ class Database {
                 raw_data_path, extraction_status
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'extracted')
             ON CONFLICT (chat_id) DO UPDATE SET
+                extraction_run_id = EXCLUDED.extraction_run_id,
                 total_messages = EXCLUDED.total_messages,
                 total_audios = EXCLUDED.total_audios,
                 total_images = EXCLUDED.total_images,
@@ -95,15 +102,16 @@ class Database {
                 last_message_at = EXCLUDED.last_message_at,
                 raw_data_path = EXCLUDED.raw_data_path,
                 extraction_status = 'extracted',
-                updated_at = NOW()`,
+                updated_at = NOW()
+            RETURNING id`,
             [
-                id, data.extraction_run_id, data.chat_id, data.phone,
+                newId, data.extraction_run_id, data.chat_id, data.phone,
                 data.whatsapp_name, data.is_group, data.total_messages,
                 data.total_audios, data.total_images, data.total_documents,
                 data.first_message_at, data.last_message_at, data.raw_data_path
             ]
         );
-        return id;
+        return result.rows[0].id;
     }
 
     async markConversationFailed(chatId, error) {
