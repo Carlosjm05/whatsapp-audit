@@ -621,9 +621,12 @@ async function runDaemonMode() {
                 if (!batch || batch <= 0) {
                     throw new Error('extract job requires `batch` > 0');
                 }
+                const before = job.before && /^\d{4}-\d{2}-\d{2}$/.test(job.before)
+                    ? job.before
+                    : null;
                 sock = await connectWithRetry();
                 await waitForHistorySync();
-                await runExtractMode({ batch });
+                await runExtractMode({ batch, before });
                 if (sock) { try { sock.end(undefined); } catch(_){} sock = null; }
             } else {
                 throw new Error(`Acción desconocida: ${job.action}`);
@@ -854,9 +857,36 @@ async function runExtractMode(options = {}) {
         // recientes). NO depende del orden del sync — es determinístico
         // entre reescaneos del QR.
         if (options.batch && options.batch > 0) {
-            const queue = await db.getNextExtractBatch(options.batch);
+            // Filtro de fecha opcional: --before=YYYY-MM-DD limita el lote
+            // a chats con last_message_at <= ese día (hora Bogotá inclusive).
+            // Internamente convertimos a 21-DD 05:00 UTC = fin del día Bogotá.
+            let beforeIso = null;
+            if (options.before) {
+                const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(options.before.trim());
+                if (!m) {
+                    throw new Error(`--before inválido: '${options.before}' (esperado YYYY-MM-DD)`);
+                }
+                const [, y, mo, d] = m;
+                // Día siguiente 00:00 -05:00 = fin inclusivo del día Bogotá.
+                const next = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d) + 1, 5, 0, 0));
+                beforeIso = next.toISOString();
+                logger.info(
+                    `⚙️  --before=${options.before}: solo chats con last_message_at ` +
+                    `<= ${options.before} 23:59:59 hora Bogotá`
+                );
+            }
+
+            const queue = await db.getNextExtractBatch(options.batch, beforeIso);
             if (queue.length === 0) {
-                logger.warn('⚠️  No hay chats indexados pendientes. Corré `npm run index` primero.');
+                if (beforeIso) {
+                    const totalBefore = await db.countIndexadoBefore(beforeIso);
+                    logger.warn(
+                        `⚠️  No hay chats indexados con last_message_at <= ${options.before}. ` +
+                        `Total indexados que cumplen el filtro: ${totalBefore}.`
+                    );
+                } else {
+                    logger.warn('⚠️  No hay chats indexados pendientes. Corré `npm run index` primero.');
+                }
                 await db.updateExtractionRun(runId, {
                     status: 'completed', total_chats: 0, finished_at: new Date().toISOString(),
                 });
@@ -867,6 +897,16 @@ async function runExtractMode(options = {}) {
                 `   Rango de prioridad: #${queue[0].extract_priority} → ` +
                 `#${queue[queue.length-1].extract_priority}`
             );
+            // Mostrar rango de fechas para feedback al operador.
+            const fechas = queue
+                .map(r => r.last_message_at)
+                .filter(Boolean)
+                .sort();
+            if (fechas.length > 0) {
+                logger.info(
+                    `   Rango de fechas: ${fechas[0]} → ${fechas[fechas.length-1]}`
+                );
+            }
             let skippedNoSync = 0;
             let skippedNoMsgs = 0;
             for (const row of queue) {
@@ -1124,9 +1164,15 @@ async function main() {
     const mode = args.mode || 'extract';
     const limit = args.limit ? parseInt(args.limit, 10) : null;
     const batch = args.batch ? parseInt(args.batch, 10) : null;
+    const before = args.before ? String(args.before).trim() : null;
     const phone = args.phone ? String(args.phone).replace(/[^0-9]/g, '') : null;
     const skipMedia = !!args['skip-media'] || !!args.skipMedia;
     const force = !!args.force;
+
+    if (before && !/^\d{4}-\d{2}-\d{2}$/.test(before)) {
+        logger.error(`Valor inválido para --before: ${before} (esperado YYYY-MM-DD)`);
+        process.exit(1);
+    }
 
     if (args.limit && (!Number.isFinite(limit) || limit <= 0)) {
         logger.error(`Valor inválido para --limit: ${args.limit}`);
@@ -1189,7 +1235,7 @@ async function main() {
             await runIndexMode();
             break;
         case 'extract':
-            await runExtractMode({ limit, batch, phone, force });
+            await runExtractMode({ limit, batch, before, phone, force });
             break;
         default:
             logger.error(`Modo desconocido: ${mode}`);

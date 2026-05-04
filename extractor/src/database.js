@@ -324,17 +324,36 @@ class Database {
 
     // Próximo lote a extraer. Toma chats indexados ordenados por
     // extract_priority ASC (los de mayor prioridad = más recientes).
-    async getNextExtractBatch(limit) {
+    // Opcionalmente acepta:
+    //   - beforeIso: filtra last_message_at <= beforeIso (timestamptz UTC).
+    //     Útil para "los próximos N chats hasta el día X" sin procesar
+    //     los más nuevos. Si NULL, toma los N más recientes globalmente.
+    async getNextExtractBatch(limit, beforeIso = null) {
         const res = await this.pool.query(
             `SELECT chat_id, whatsapp_name, phone, last_message_at, extract_priority
                FROM raw_conversations
               WHERE extraction_status = 'indexado'
                 AND extract_priority IS NOT NULL
+                AND ($2::timestamptz IS NULL OR last_message_at <= $2)
               ORDER BY extract_priority ASC
               LIMIT $1`,
-            [limit]
+            [limit, beforeIso]
         );
         return res.rows;
+    }
+
+    // Cuenta cuántos chats indexados quedan ANTES de un cutoff.
+    // Útil para que el operador sepa si tiene suficientes para un lote
+    // antes de gastar tiempo escaneando QR.
+    async countIndexadoBefore(beforeIso = null) {
+        const res = await this.pool.query(
+            `SELECT COUNT(*)::int AS c
+               FROM raw_conversations
+              WHERE extraction_status = 'indexado'
+                AND ($1::timestamptz IS NULL OR last_message_at <= $1)`,
+            [beforeIso]
+        );
+        return res.rows[0]?.c || 0;
     }
 
     // Histograma por mes (last_message_at) + estado. Usado por preview.

@@ -41,6 +41,13 @@ JOB_HISTORY_KEY = "wa:job:history"
 class JobRequest(BaseModel):
     action: str = Field(..., description="preview | index | extract")
     batch: Optional[int] = Field(None, ge=1, le=10000)
+    # Filtro opcional para action='extract': solo procesa chats con
+    # last_message_at <= before (hora Bogotá inclusive). Formato YYYY-MM-DD.
+    before: Optional[str] = Field(
+        None,
+        description="YYYY-MM-DD — extract solo chats hasta esa fecha (Bogotá)",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    )
 
 
 class ExtractionState(BaseModel):
@@ -181,6 +188,7 @@ def enqueue_job(
         "id": str(uuid.uuid4()),
         "action": action,
         "batch": body.batch,
+        "before": body.before,
         "requested_by": user,
         "requested_at": _now_iso(),
     }

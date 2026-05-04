@@ -132,6 +132,7 @@ export default function ExtraccionPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionInFlight, setActionInFlight] = useState<string | null>(null);
   const [batchSize, setBatchSize] = useState<number>(1000);
+  const [beforeDate, setBeforeDate] = useState<string>('');
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -153,13 +154,16 @@ export default function ExtraccionPage() {
     return () => clearInterval(t);
   }, [load]);
 
-  const enqueue = async (action: string, batch?: number) => {
+  const enqueue = async (action: string, batch?: number, before?: string) => {
     setActionInFlight(action);
     setFeedback(null);
     try {
+      const payload: Record<string, unknown> = { action };
+      if (batch) payload.batch = batch;
+      if (before && /^\d{4}-\d{2}-\d{2}$/.test(before)) payload.before = before;
       await fetchApi('/api/extraction/jobs', {
         method: 'POST',
-        body: JSON.stringify({ action, batch }),
+        body: JSON.stringify(payload),
       });
       setFeedback({
         kind: 'ok',
@@ -345,23 +349,46 @@ export default function ExtraccionPage() {
             <div className="font-medium text-slate-900">Extraer lote</div>
             <div className="text-xs text-slate-500 mb-2">
               Reescanea QR + procesa próximos N chats indexados (mensajes + media).
+              El filtro de fecha es opcional: limita a chats con último mensaje ≤ fecha.
             </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                min={1}
-                max={5000}
-                step={100}
-                value={batchSize}
-                onChange={e => setBatchSize(parseInt(e.target.value, 10) || 1000)}
-                className="w-24 px-2 py-1 border border-slate-300 rounded text-sm"
-              />
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-slate-600 w-16">Cantidad</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={5000}
+                  step={100}
+                  value={batchSize}
+                  onChange={e => setBatchSize(parseInt(e.target.value, 10) || 1000)}
+                  className="flex-1 px-2 py-1 border border-slate-300 rounded text-sm"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-slate-600 w-16">Hasta</label>
+                <input
+                  type="date"
+                  value={beforeDate}
+                  onChange={e => setBeforeDate(e.target.value)}
+                  placeholder="YYYY-MM-DD"
+                  className="flex-1 px-2 py-1 border border-slate-300 rounded text-sm"
+                />
+                {beforeDate && (
+                  <button
+                    onClick={() => setBeforeDate('')}
+                    className="text-xs text-slate-500 hover:text-slate-700"
+                    title="Limpiar filtro"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
               <button
-                onClick={() => enqueue('extract', batchSize)}
+                onClick={() => enqueue('extract', batchSize, beforeDate || undefined)}
                 disabled={!!actionInFlight || isJobRunning || state.indexado_pendientes === 0}
-                className="flex-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded disabled:bg-slate-300 disabled:cursor-not-allowed"
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded disabled:bg-slate-300 disabled:cursor-not-allowed"
               >
-                Encolar
+                Encolar {beforeDate && `(hasta ${beforeDate})`}
               </button>
             </div>
           </div>
