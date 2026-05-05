@@ -14,7 +14,6 @@ import {
   Building,
   TrendingUp,
   Search,
-  Menu,
   X,
   Settings,
   Ghost,
@@ -210,62 +209,39 @@ function Brand() {
   );
 }
 
-export default function Sidebar() {
+// Drawer mobile controlado externamente (desde AppShell). Se monta solo
+// cuando isOpen=true. El AppShell maneja el estado para que el Header y
+// BottomNav puedan abrirlo desde sus propios botones.
+export function MobileDrawer({
+  isOpen,
+  onClose,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+}) {
   const pathname = usePathname() || '';
-  const [mobileOpen, setMobileOpen] = useState(false);
-
+  if (!isOpen) return null;
   return (
-    <>
-      {/* Mobile header with hamburger */}
-      <div className="md:hidden bg-slate-900 text-white flex items-center gap-3 px-4 py-3 sticky top-0 z-30">
-        <button
-          onClick={() => setMobileOpen(true)}
-          className="p-2 -m-2"
-          aria-label="Abrir menú"
-        >
-          <Menu className="w-5 h-5" />
-        </button>
-        <div className="w-7 h-7 rounded bg-brand-600 flex items-center justify-center">
-          <Building className="w-4 h-4 text-white" />
-        </div>
-        <div className="text-sm font-semibold">Ortiz Finca Raíz</div>
-      </div>
-
-      {/* Mobile drawer */}
-      {mobileOpen && (
-        <div
-          className="md:hidden fixed inset-0 z-40 bg-slate-900/70"
-          onClick={() => setMobileOpen(false)}
-        >
-          <aside
-            className="w-72 max-w-[85vw] h-full bg-slate-900 text-slate-100 flex flex-col"
-            onClick={(e) => e.stopPropagation()}
+    <div
+      className="md:hidden fixed inset-0 z-50 bg-slate-900/70"
+      onClick={onClose}
+    >
+      <aside
+        className="w-72 max-w-[85vw] h-full bg-slate-900 text-slate-100 flex flex-col
+                   pb-[env(safe-area-inset-bottom)] shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <Brand />
+          <button
+            onClick={onClose}
+            className="p-3 text-slate-300 hover:text-white"
+            aria-label="Cerrar menú"
           >
-            <div className="flex items-center justify-between">
-              <Brand />
-              <button
-                onClick={() => setMobileOpen(false)}
-                className="p-3 text-slate-300 hover:text-white"
-                aria-label="Cerrar menú"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <NavList pathname={pathname} onNavigate={() => setMobileOpen(false)} />
-            <div className="px-3 py-3 border-t border-slate-800">
-              <StatusIndicator />
-            </div>
-            <div className="px-6 py-3 border-t border-slate-800 text-xs text-slate-500">
-              v1.3 · Uso interno
-            </div>
-          </aside>
+            <X className="w-5 h-5" />
+          </button>
         </div>
-      )}
-
-      {/* Desktop sidebar */}
-      <aside className="hidden md:flex w-64 shrink-0 bg-slate-900 text-slate-100 flex-col">
-        <Brand />
-        <NavList pathname={pathname} />
+        <NavList pathname={pathname} onNavigate={onClose} />
         <div className="px-3 py-3 border-t border-slate-800">
           <StatusIndicator />
         </div>
@@ -273,6 +249,23 @@ export default function Sidebar() {
           v1.3 · Uso interno
         </div>
       </aside>
-    </>
+    </div>
+  );
+}
+
+// Sidebar persistente solo en desktop (md+).
+export default function Sidebar() {
+  const pathname = usePathname() || '';
+  return (
+    <aside className="hidden md:flex w-64 shrink-0 bg-slate-900 text-slate-100 flex-col">
+      <Brand />
+      <NavList pathname={pathname} />
+      <div className="px-3 py-3 border-t border-slate-800">
+        <StatusIndicator />
+      </div>
+      <div className="px-6 py-3 border-t border-slate-800 text-xs text-slate-500">
+        v1.3 · Uso interno
+      </div>
+    </aside>
   );
 }

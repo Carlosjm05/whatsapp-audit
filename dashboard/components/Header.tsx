@@ -1,10 +1,14 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { LogOut, User } from 'lucide-react';
+import { LogOut, User, Menu, Building } from 'lucide-react';
 import { getUsername, logout } from '@/lib/auth';
 
-export default function Header() {
+interface Props {
+  onMenuClick?: () => void;
+}
+
+export default function Header({ onMenuClick }: Props) {
   const [user, setUser] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
@@ -13,22 +17,49 @@ export default function Header() {
   }, []);
 
   return (
-    <header className="sticky top-0 z-30 bg-white border-b border-slate-200 px-6 lg:px-8 h-14 flex items-center justify-between">
-      <div className="text-sm text-slate-500">Panel de auditoría conversacional</div>
-      <div className="relative">
+    <header
+      className="sticky top-0 z-30 bg-white border-b border-slate-200 h-14 flex items-center
+                 px-3 sm:px-6 lg:px-8 gap-3"
+    >
+      {/* Hamburger solo en mobile (md+ tiene sidebar persistente) */}
+      {onMenuClick && (
+        <button
+          onClick={onMenuClick}
+          className="md:hidden p-2 -ml-2 text-slate-700 hover:bg-slate-100 rounded-md"
+          aria-label="Abrir menú"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+      )}
+
+      {/* Brand mini en mobile, texto en desktop */}
+      <div className="md:hidden flex items-center gap-2 min-w-0 flex-1">
+        <div className="w-7 h-7 rounded-md bg-brand-600 flex items-center justify-center shrink-0">
+          <Building className="w-4 h-4 text-white" />
+        </div>
+        <div className="text-sm font-semibold text-slate-900 truncate">
+          Ortiz Finca Raíz
+        </div>
+      </div>
+      <div className="hidden md:block text-sm text-slate-500 flex-1">
+        Panel de auditoría conversacional
+      </div>
+
+      {/* User dropdown */}
+      <div className="relative shrink-0">
         <button
           onClick={() => setOpen((v) => !v)}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-slate-100 text-sm"
+          className="flex items-center gap-2 px-2 sm:px-3 py-1.5 rounded-lg hover:bg-slate-100 text-sm"
         >
           <div className="w-7 h-7 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center">
             <User className="w-4 h-4" />
           </div>
-          <span className="font-medium text-slate-800">{user}</span>
+          <span className="font-medium text-slate-800 hidden sm:inline">{user}</span>
         </button>
         {open && (
           <div className="absolute right-0 mt-1 w-56 bg-white border border-slate-200 rounded-lg shadow-lg py-1 z-40">
             <div className="px-3 py-2 text-xs text-slate-500 border-b border-slate-100">
-              Sesión activa
+              Sesión activa: <strong className="text-slate-700">{user}</strong>
             </div>
             <button
               onClick={() => logout()}
