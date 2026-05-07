@@ -131,6 +131,20 @@ def get_current_user_with_role(token: Optional[str] = Depends(oauth2_scheme)) ->
         )
 
 
+def require_admin(current: dict = Depends(get_current_user_with_role)) -> dict:
+    """Dependency que solo deja pasar a usuarios con rol 'admin'.
+
+    Operadores y viewers reciben 403. Sub-admin del .env (super-admin
+    baked-in) tiene rol 'admin', así que también pasa.
+    """
+    if current.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Esta acción requiere rol de administrador.",
+        )
+    return current
+
+
 def _authenticate(username: str, password: str) -> Optional[dict]:
     """Devuelve {'username','role'} si las creds son válidas, o None.
 

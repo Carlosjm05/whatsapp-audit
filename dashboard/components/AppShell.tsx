@@ -9,10 +9,13 @@ import { getToken } from '@/lib/auth';
 
 // Rutas públicas (sin login). /escanear/[token] es para que el cliente
 // pueda escanear el QR vía link temporal sin tener cuenta en el panel.
+// /reporte es el informe ejecutivo agregado y anónimo que Oscar comparte
+// en reuniones — protegido por token en query string (?k=...).
 function isPublicPath(pathname: string): boolean {
   return (
     pathname.startsWith('/login') ||
-    pathname.startsWith('/escanear')
+    pathname.startsWith('/escanear') ||
+    pathname.startsWith('/reporte')
   );
 }
 

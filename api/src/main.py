@@ -26,7 +26,9 @@ from .routers import (
     leads,
     overview,
     product_intel,
+    public_report as public_report_router,
     qr as qr_router,
+    share_tokens as share_tokens_router,
     system as system_router,
     trends,
 )
@@ -96,6 +98,14 @@ app.include_router(qr_router.router)
 app.include_router(system_router.router)
 app.include_router(cost_router.router)
 app.include_router(extraction_router.router)
+# Gestión de tokens del informe público (admin only). Tiene que ir
+# ANTES del router público porque public_report importa
+# `validate_public_token` de aquí.
+app.include_router(share_tokens_router.router)
+# Endpoint público (sin login) — protegido solo por token en query string.
+# Sirve datos agregados anónimos para que Oscar comparta el link en
+# reuniones. Sin advisor_name ni datos por persona. Ver public_report.py.
+app.include_router(public_report_router.router)
 
 
 # --- Health ---

@@ -22,14 +22,17 @@ import {
   Sparkles,
   Wrench,
   Download,
+  Link2,
 } from 'lucide-react';
 import StatusIndicator from './StatusIndicator';
+import { isAdmin } from '@/lib/auth';
 
 type NavItem = {
   href: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   badge?: 'new';
+  adminOnly?: boolean;
 };
 
 type NavGroup = {
@@ -74,6 +77,7 @@ const groups: NavGroup[] = [
       { href: '/conexion',   label: 'Conexión WhatsApp', icon: Smartphone, badge: 'new' },
       { href: '/extraccion', label: 'Extracción por lotes', icon: Download, badge: 'new' },
       { href: '/catalogos',  label: 'Catálogos', icon: Settings },
+      { href: '/enlaces',    label: 'Enlaces compartibles', icon: Link2, adminOnly: true },
     ],
   },
 ];
@@ -101,10 +105,24 @@ function saveOpenGroups(open: Set<string>) {
 }
 
 function NavList({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
+  // Filtrado por rol: items adminOnly solo se muestran a admins.
+  // Hidratamos en el efecto para evitar mismatch (localStorage no
+  // existe en SSR). Por defecto asumimos NO admin — si lo es, el
+  // efecto destrabará los items extra.
+  const [admin, setAdmin] = useState(false);
+  useEffect(() => {
+    setAdmin(isAdmin());
+  }, []);
+
+  const visibleGroups = groups.map((g) => ({
+    ...g,
+    items: g.items.filter((it) => !it.adminOnly || admin),
+  }));
+
   // Por defecto abrimos solo el grupo que contiene la ruta actual + 'principal'.
   const initialOpen = (() => {
     const s = new Set<string>(['principal']);
-    for (const g of groups) {
+    for (const g of visibleGroups) {
       if (g.items.some((it) => pathname === it.href || pathname.startsWith(it.href + '/'))) {
         s.add(g.id);
       }
@@ -135,7 +153,7 @@ function NavList({ pathname, onNavigate }: { pathname: string; onNavigate?: () =
 
   return (
     <nav className="flex-1 px-3 py-4 space-y-3 overflow-y-auto">
-      {groups.map((group) => {
+      {visibleGroups.map((group) => {
         const isOpen = openIds.has(group.id);
         const GroupIcon = group.icon;
         const hasActive = group.items.some(

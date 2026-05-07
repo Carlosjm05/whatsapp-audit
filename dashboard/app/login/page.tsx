@@ -29,7 +29,9 @@ export default function LoginPage() {
         body: JSON.stringify({ username, password })
       });
       if (!res.access_token) throw new ApiError('Respuesta inválida', 500);
-      setToken(res.access_token, username);
+      // Persistimos también el role: la página /enlaces (gestión de
+      // tokens del informe público) lo lee para gatear el acceso.
+      setToken(res.access_token, username, res.user?.role);
       router.replace('/overview');
     } catch (err) {
       const msg =

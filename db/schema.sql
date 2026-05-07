@@ -530,6 +530,29 @@ CREATE INDEX idx_qr_tokens_token   ON qr_share_tokens(token);
 CREATE INDEX idx_qr_tokens_expires ON qr_share_tokens(expires_at);
 
 -- ─────────────────────────────────────────────
+-- TABLA: public_report_tokens
+-- Tokens para el informe público `/reporte`. Generados desde el
+-- panel admin (página /enlaces). Guardamos solo sha256(plaintext) —
+-- el plano solo se devuelve UNA vez al crearlo. Long-lived: caducidad
+-- opcional, revocables, con tracking de uso.
+-- ─────────────────────────────────────────────
+CREATE TABLE public_report_tokens (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    token_hash      VARCHAR(64) NOT NULL UNIQUE,         -- sha256 hex del plaintext
+    label           VARCHAR(255) NOT NULL,                -- ej. "Para Oscar - jun"
+    created_by      VARCHAR(64) NOT NULL,                 -- username del admin
+    expires_at      TIMESTAMPTZ,                          -- NULL = nunca expira
+    revoked_at      TIMESTAMPTZ,                          -- NULL = activo
+    last_used_at    TIMESTAMPTZ,
+    use_count       INTEGER NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_public_report_tokens_active
+    ON public_report_tokens(revoked_at, expires_at);
+CREATE INDEX idx_public_report_tokens_created_at
+    ON public_report_tokens(created_at DESC);
+
+-- ─────────────────────────────────────────────
 -- ALTER conversation_outcomes — manual override del análisis IA.
 -- Si el operador marca manual_status, este TIENE PRECEDENCIA sobre
 -- final_status en lecturas/UI. Permite corregir análisis equivocados

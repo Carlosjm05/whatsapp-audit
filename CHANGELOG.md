@@ -10,6 +10,44 @@ historial de commits.
 
 ## [No publicado]
 
+### Added
+
+- **Informe público `/reporte` + gestión de enlaces desde el panel
+  admin** — Página agregada y anónima de diagnóstico de errores que
+  el cliente (Oscar) puede compartir en reuniones sin exponer datos
+  por asesor. Sin login, protegida por token en query string
+  (`?k=<token>`).
+
+  **Generación de enlaces desde el dashboard:** página nueva
+  `/enlaces` (rol `admin`) lista, crea y revoca tokens. Cada token se
+  guarda **hasheado** (`sha256`) en la tabla `public_report_tokens`;
+  el plaintext solo se devuelve en el response del POST de creación
+  (filosofía "shown once"). Tracking de uso (last_used_at, use_count)
+  para auditoría. Caducidad opcional configurable. Endpoints admin:
+  `GET/POST /api/admin/share-tokens`,
+  `POST /api/admin/share-tokens/{id}/revoke`,
+  `DELETE /api/admin/share-tokens/{id}`.
+  Migración: `db/migrations/010_public_report_tokens.sql`.
+
+  **Endpoint público:** `GET /api/public/report?k=<token>`. Valida
+  contra DB primero, con fallback a `PUBLIC_REPORT_TOKEN` del `.env`
+  para compatibilidad. Si nada coincide responde 404 (no filtra
+  existencia del endpoint).
+
+  **Datos incluidos:** resumen general, KPIs de tiempo de respuesta,
+  distribución por categoría, SLA velocidad/seguimiento, % de
+  procesos rotos (no-followup, mensajes genéricos, no propuso visita,
+  no calificó, etc.), top 30 de errores categorizados, causas de
+  pérdida granular, estados finales, objeciones (resueltas/ocultas/
+  por tipo), preguntas sin responder, tendencia mensual y lista
+  textual completa de hasta 5.000 errores con fecha. Sin advisor_name,
+  lead_id, teléfono ni nombres en ninguna respuesta.
+
+  **Helper nuevo:** `require_admin` en `api/src/auth.py` para gating
+  por rol en endpoints admin (devuelve 403 a operator/viewer).
+  El `role` ahora se persiste también en `localStorage` del dashboard
+  para gatear la página `/enlaces` antes del request al backend.
+
 Hallazgos de **código** de la auditoría 2026-05-06 pendientes de
 aplicar. Ver
 [docs/audits/2026-05-06-auditoria-completa.md](docs/audits/2026-05-06-auditoria-completa.md)
