@@ -1,3 +1,21 @@
+"""Generador del export "base de conocimiento" para Dapta.
+
+Toma todos los leads ya analizados y produce filas en
+`dapta_knowledge_base` listas para alimentar el agente IA del cliente:
+
+  - Top preguntas reales del lead (verbatim) clasificadas por tema.
+  - Top objeciones por tipo, con la respuesta del asesor cuando
+    `response_quality >= 8` ("respuesta_ideal").
+  - Señales de compra y abandono detectadas.
+
+El export se regenera completo en cada corrida (TRUNCATE + INSERT
+dentro de transacción) — un fallo intermedio NO deja la KB vacía.
+
+NO contiene PII por diseño: agregamos verbatim de objeciones y
+preguntas, pero los `source_leads` se referencian por UUID (no número
+de teléfono) y el agente Dapta solo recibe el corpus textual. Ver
+docs/PRIVACIDAD.md sección 7 (transferencia internacional).
+"""
 from __future__ import annotations
 
 import logging

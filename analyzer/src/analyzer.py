@@ -1,3 +1,24 @@
+"""Núcleo del analizador IA (cerebro v3) — pipeline two-pass por lead.
+
+Para cada lead pendiente:
+
+  1. Si el chat tiene <20 palabras → marca `datos_insuficientes` y
+     persiste sin llamar a Claude.
+  2. Pass 1 (triaje): Claude Haiku decide `analizable | trivial | spam`.
+     Si NO es `analizable`, persiste el verdict y termina.
+  3. Pass 2 (análisis): Claude Sonnet con prompt cacheado (5 min TTL)
+     extrae los 45+ campos. Pydantic valida la salida.
+  4. Computa métricas no-IA (response times, ghost score, business
+     hours) localmente.
+  5. Persiste todo en una transacción atómica.
+
+Workers paralelos: `ANALYZER_WORKERS` (default 2). Costos por token
+(input/output/cache_read/cache_write) se trackean en
+`lead_analysis_history`.
+
+Decisiones documentadas en docs/adr/0003-two-pass-haiku-sonnet.md.
+Contrato de salida: docs/SCHEMA_45_CAMPOS.md.
+"""
 from __future__ import annotations
 
 import json

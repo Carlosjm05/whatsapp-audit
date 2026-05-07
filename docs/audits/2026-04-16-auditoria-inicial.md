@@ -1,4 +1,9 @@
-# Plan de correcciones — whatsapp-audit
+# Auditoría 2026-04-16 — Plan de correcciones (11 fases)
+
+> **Estado**: ejecutada en su mayoría entre 2026-04-16 y 2026-04-17.
+> Los commits que cerraron cada fase están en la tabla al final. Los
+> hallazgos posteriores y los pendientes se consolidaron en
+> [`2026-05-06-auditoria-completa.md`](2026-05-06-auditoria-completa.md).
 
 Basado en la auditoría del 2026-04-16. 11 fases, cada una es un commit (o pocos).
 Orden diseñado para que cada fase sea independiente y testeable.
@@ -369,24 +374,31 @@ Voy a usar commits convencionales como los que ya están en el repo:
 - `feat(modulo): descripcion`
 - `refactor(modulo): descripcion`
 
-Co-autor en cada commit: `Claude Opus 4 <noreply@anthropic.com>`.
+Autor del trabajo: Carlos Manuel Jiménez Méndez. Algunos commits del
+periodo incluyen una línea `Co-Authored-By: Claude` —residual del uso
+de Claude Code como herramienta de productividad— sin implicar
+coautoría intelectual ni cesión de derechos sobre el sistema.
 
 ---
 
 ## Resumen de riesgo por fase
 
-| Fase | Destructiva | Requiere wipe DB | Requiere rebuild Docker |
-|---|---|---|---|
-| 1  | No | No | dashboard, api |
-| 2  | No | No | analyzer |
-| 3  | **SÍ** | **SÍ** | postgres (init) |
-| 4  | No | No (ya hecho en 3) | analyzer, api |
-| 5  | No | No | api, nginx |
-| 6  | No | No | extractor |
-| 7  | No | No | transcriber |
-| 8  | No | No | analyzer |
-| 9  | No | No | api, dashboard |
-| 10 | No | No | dashboard |
-| 11 | No | No | todos |
+| Fase | Destructiva | Requiere wipe DB | Requiere rebuild Docker | Estado | Commit |
+|---|---|---|---|---|---|
+| 1  | No | No | dashboard, api | Cerrada | `3e668e3` |
+| 2  | No | No | analyzer | Cerrada | `056a7bf` |
+| 3  | **SÍ** | **SÍ** | postgres (init) | Cerrada | `6fa1459` (+ followup `defed86`) |
+| 4  | No | No | analyzer, api | Cerrada | `e90fe93` |
+| 5  | No | No | api, nginx | Cerrada parcial | `c476567` (HTTPS bloque sigue comentado — ver auditoría 2026-05-06 hallazgo #2) |
+| 6  | No | No | extractor | Cerrada parcial | `442c20d` (rate limits aplicados, MEDIA_DELAY_*  no efectivamente usado — ver auditoría 2026-05-06) |
+| 7  | No | No | transcriber | Cerrada parcial | `53d2124` (`import re` faltante detectado en 2026-05-06) |
+| 8  | No | No | analyzer | Cerrada | `eb63991` |
+| 9  | No | No | api, dashboard | Cerrada | `551ea28` |
+| 10 | No | No | dashboard | Cerrada | `59a66ce` |
+| 11 | No | No | todos | Cerrada parcial | `208eaf1` (sin .dockerignore, sin backups — ver auditoría 2026-05-06) |
 
 Total estimado: 11 commits, ~2-4 horas de ejecución secuencial.
+
+**Conclusión retroactiva**: el plan se ejecutó en su mayoría dentro de
+las 24h siguientes a la auditoría. Los puntos parciales (5, 6, 7, 11)
+quedaron documentados en la siguiente auditoría con su estado real.

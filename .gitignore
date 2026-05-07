@@ -1,7 +1,9 @@
-# Environment
+# Environment — nunca commitear secretos reales.
+# El glob .env.* cubre .env.local, .env.production, .env.staging, etc.
+# Excepción explícita: .env.example sí se commitea (tiene placeholders).
 .env
-.env.local
-.env.production
+.env.*
+!.env.example
 
 # Dependencies
 node_modules/

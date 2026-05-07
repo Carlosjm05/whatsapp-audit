@@ -1,3 +1,21 @@
+"""Entry point del módulo analyzer.
+
+Modos disponibles (CLI flag `--mode`):
+
+  - `daemon`   — corre indefinidamente, polling por leads pending.
+                 Usado en producción dentro del contenedor con profile
+                 `analysis`. Ver docs/adr/0004-profiles-extraction-analysis.md.
+  - `analyze`  — procesa todos los pending y termina. Útil para correr
+                 una pasada manual desde fuera del daemon.
+  - `kb`       — solo regenera la base de conocimiento Dapta a partir
+                 de los leads ya analizados.
+
+Maneja SIGTERM/SIGINT para shutdown limpio (espera workers actuales,
+NO arranca nuevos). Las llamadas costosas a Claude se dejan terminar
+para no perder el dinero ya gastado.
+
+Comandos completos: docs/RUNBOOK.md sección "Disparar análisis".
+"""
 from __future__ import annotations
 
 import argparse

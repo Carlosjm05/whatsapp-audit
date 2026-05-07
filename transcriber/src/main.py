@@ -1,7 +1,24 @@
-"""
-══════════════════════════════════════════════════════════════
-TRANSCRIBER — Pipeline de transcripción de audios con Whisper
-══════════════════════════════════════════════════════════════
+"""Pipeline de transcripción de audios con OpenAI Whisper.
+
+Para cada audio referenciado en `messages` con `message_type='audio'`
+y sin transcripción previa:
+
+  1. Verifica que el archivo existe en `data/audios/` y pesa <25MB
+     (límite de la API Whisper). Si no, marca `skipped` con motivo.
+  2. Llama a `client.audio.transcriptions.create(...)` con timeout.
+  3. Calcula un score de confianza (a partir de `segments[*].avg_logprob`)
+     y marca baja confianza cuando < `CONFIDENCE_THRESHOLD` (0.80).
+  4. Persiste en `transcriptions` con la transcripción y el score.
+
+Después de transcribir, `generate_unified_transcripts()` construye el
+texto unificado por conversación que consume el analyzer: mensajes de
+texto + transcripciones de audio en orden cronológico, marcando cada
+turno con `[LEAD]` / `[ASESOR]`.
+
+Workers paralelos: `TRANSCRIBER_WORKERS` (default 3).
+Retry filter solo en errores transitorios (`APIConnectionError`,
+`RateLimitError`, `APITimeoutError`). NO reintenta `FileNotFoundError`
+ni audios mal formados.
 """
 
 import os

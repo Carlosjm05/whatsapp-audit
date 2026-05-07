@@ -1,3 +1,23 @@
+"""Prompt grande del analyzer (Pass 2, Sonnet) — cerebro v3.
+
+Este módulo expone `build_prompt(transcript, hints)` que devuelve el
+texto completo enviado a Claude Sonnet. La porción estática (instrucciones
++ schema + ejemplos + REGLA MADRE) entra al `system` con
+`cache_control: ephemeral` para amortizar el costo de input
+(~10k tokens) por 5 minutos a través de varios chats.
+
+El prompt extrae 45+ campos en un solo pase JSON. Convenciones de
+enums (`'si'/'no'/'desconocido'`) y secciones mapean 1:1 con la DB.
+
+ANTES de modificar este archivo, leer:
+  - docs/SCHEMA_45_CAMPOS.md  (qué campos exige el contrato)
+  - docs/adr/0003-two-pass-haiku-sonnet.md  (cómo encaja en el flow)
+  - analyzer/src/validator.py  (qué se acepta de la respuesta)
+  - db/schema.sql  (qué columnas / CHECK constraints existen)
+
+Cualquier cambio debe propagarse simultáneamente a esos 4 archivos
+o algo se rompe en silencio.
+"""
 from .catalogos import asesores_context_string, proyectos_context_string
 
 

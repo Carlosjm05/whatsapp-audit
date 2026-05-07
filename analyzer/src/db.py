@@ -1,3 +1,24 @@
+"""Capa de persistencia del analyzer (PostgreSQL via psycopg2).
+
+Concentra TODAS las queries SQL del módulo: registro de leads
+pendientes, fetch del trabajo siguiente, persistencia atómica del
+resultado del análisis (15+ tablas afectadas en una transacción),
+escritura del verdict del triaje Haiku, manejo del historial
+`lead_analysis_history`, generación del export de la base de
+conocimiento Dapta.
+
+Reglas de oro:
+
+  - Todas las queries usan parametrización `%s` — nunca f-strings con
+    input externo.
+  - `_safe_enum()` coacciona valores enum a un default conocido en
+    lugar de hacer raise (evita perder leads por enums inesperados).
+  - Persist con `pg_try_advisory_xact_lock` para evitar race con
+    `recompute_metrics.py` y con CLIs paralelos.
+
+Contrato de salida (45+ campos): docs/SCHEMA_45_CAMPOS.md.
+Cambios al schema: docs/adr/0006-schema-vs-migraciones.md.
+"""
 from __future__ import annotations
 
 import logging

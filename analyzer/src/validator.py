@@ -1,3 +1,26 @@
+"""Validador Pydantic v2 de la respuesta JSON de Claude Sonnet.
+
+Define `AnalysisOutput` (modelo raíz) y todos los sub-modelos del
+contrato de 45+ campos (LeadInfo, Interest, Financials, Intent,
+Objection, AdvisorScore, Outcome, KnowledgeBase, etc.).
+
+Política de validación:
+
+  - Enums: import desde `enums.py` (única fuente de verdad).
+  - Coerción tolerante: si Claude devuelve un valor enum desconocido,
+    se cae a un default razonable (`"desconocido"`, `"otro"`) en lugar
+    de raise. Esto evita perder leads por respuestas idiosincráticas.
+  - Tipos numéricos: validados en rango; valores NULL aceptados donde
+    el prompt explicitamente permite "no inferible".
+  - NO incluye campos computados en analyzer.py (response times,
+    métricas, ghost_score). Esos NO vienen de Claude — el prompt
+    explícitamente los excluye.
+
+Si la validación falla, el lead se marca `failed` SIN reintentar
+(error no retriable — gastar otra llamada a Claude no lo va a arreglar).
+
+Cambios al contrato: docs/SCHEMA_45_CAMPOS.md.
+"""
 from __future__ import annotations
 
 from typing import List, Optional

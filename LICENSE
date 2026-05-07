@@ -1,0 +1,244 @@
+LICENCIA DE USO — SOFTWARE PROPIETARIO
+═══════════════════════════════════════
+
+Copyright (c) 2026 Carlos Manuel Jiménez Méndez. Todos los derechos
+reservados.
+
+Este documento constituye el acuerdo principal de uso del software
+"whatsapp-audit" (en adelante, "el Sistema") entre las partes:
+
+
+1. AUTOR Y TITULAR DE LOS DERECHOS
+───────────────────────────────────
+
+Nombre:    Carlos Manuel Jiménez Méndez
+WhatsApp:  +57 302 439 6752
+Correo:    carlitos05203rules@gmail.com
+País:      Colombia
+
+El Autor desarrolló íntegramente el Sistema, incluyendo —pero no
+limitado a— el código fuente, los prompts de inteligencia artificial,
+el esquema de base de datos, la lógica de extracción, transcripción y
+análisis, el frontend y la documentación. El Sistema es propiedad
+intelectual del Autor en su totalidad y de manera exclusiva.
+
+El uso de herramientas de productividad asistidas por inteligencia
+artificial durante el desarrollo no transfiere autoría a terceros: la
+titularidad sigue siendo del Autor.
+
+
+2. USUARIO AUTORIZADO
+─────────────────────
+
+Razón social:        Ortiz Finca Raíz
+Representante:       Oscar Ortiz
+NIT:                 [pendiente de completar antes de producción]
+Ciudad:              Bogotá D.C., Colombia
+
+(En adelante, "el Usuario".)
+
+
+3. ALCANCE DE LA LICENCIA
+─────────────────────────
+
+El Autor concede al Usuario una licencia **personal, no exclusiva,
+intransferible y revocable** para USAR el Sistema mediante el
+dashboard web operado en su infraestructura, con el único propósito
+de auditar y gestionar las conversaciones de WhatsApp del propio
+Usuario.
+
+La licencia cubre:
+
+  a) El acceso al dashboard a través de credenciales asignadas.
+  b) La generación, almacenamiento y consulta de los análisis
+     derivados del WhatsApp del Usuario.
+  c) El uso interno del export hacia la plataforma Dapta para sus
+     propios fines comerciales.
+
+La licencia NO cubre, bajo ninguna interpretación:
+
+  a) El acceso al código fuente, prompts, esquema, scripts de
+     deployment, archivos de configuración, ni a cualquier otro
+     componente intelectual del Sistema.
+  b) La copia, distribución, sublicencia, cesión, venta, alquiler,
+     ingeniería inversa, modificación, traducción o creación de
+     obras derivadas del Sistema.
+  c) La operación autónoma del Sistema sin la administración del
+     Autor.
+  d) La contratación de terceros para mantener, modificar o extender
+     el Sistema.
+  e) El uso del Sistema para procesar datos de personas distintas
+     a las que están dentro del alcance del WhatsApp del Usuario y
+     conforme a la política descrita en docs/PRIVACIDAD.md.
+
+
+4. MODELO OPERATIVO
+───────────────────
+
+El Sistema corre sobre infraestructura contratada a nombre del
+Usuario (Droplet de DigitalOcean asociado al correo del Usuario,
+dominios y servicios asociados), pero su **administración técnica
+es exclusiva del Autor** (acceso SSH, despliegues, actualizaciones,
+configuración, claves API).
+
+El Usuario reconoce que:
+
+  a) El Sistema fue instalado por el Autor en infraestructura del
+     Usuario únicamente para facilitar la operación.
+  b) El hecho de pagar la infraestructura no le otorga propiedad ni
+     derechos sobre el código que corre en ella.
+  c) Cualquier intento de extraer, copiar o conservar el código del
+     servidor sin autorización escrita del Autor constituye
+     violación de esta licencia y de las leyes de propiedad
+     intelectual aplicables.
+
+
+5. PROPIEDAD DE LOS DATOS
+─────────────────────────
+
+Esta licencia distingue claramente entre:
+
+  • DATOS DEL USUARIO: las conversaciones de WhatsApp originales,
+    los datos personales de sus leads y la información comercial
+    propia del Usuario. Estos datos son propiedad del Usuario y
+    están sujetos a las obligaciones de la Ley 1581 de 2012, según
+    se detalla en docs/PRIVACIDAD.md.
+
+  • COMPONENTES DEL AUTOR: el código fuente, los prompts, el
+    esquema de base de datos, la lógica de análisis, los modelos
+    estructurales, las configuraciones, scripts y documentación.
+    Estos son propiedad exclusiva del Autor.
+
+  • DATOS DERIVADOS: los análisis estructurados producidos por el
+    Sistema (los 45+ campos por chat) son una mezcla. La información
+    fáctica sobre los leads del Usuario le pertenece al Usuario; la
+    estructura, taxonomía, prompts y modelos que la generaron le
+    pertenecen al Autor. Tras una eventual revocación, el Usuario
+    conserva acceso a los registros de su base de datos pero no
+    puede reproducir el Sistema que los generó.
+
+
+6. DERECHO DE REVOCACIÓN
+────────────────────────
+
+El Autor se reserva el derecho de **revocar esta licencia en
+cualquier momento, a su sola discreción, mediante notificación por
+escrito** (correo electrónico o WhatsApp) al representante del
+Usuario, con un preaviso mínimo de cinco (5) días calendario.
+
+Tras la revocación, el Autor procederá a:
+
+  a) Detener los servicios técnicos administrados desde su lado.
+  b) Retirar del servidor del Usuario el código fuente, los prompts,
+     scripts y cualquier componente de su autoría.
+  c) Revocar las credenciales de despliegue.
+
+El Usuario conservará:
+
+  a) Su base de datos PostgreSQL con los registros derivados del
+     análisis hasta el momento de la revocación.
+  b) Su infraestructura (Droplet, dominios, cuentas de proveedores).
+
+El Usuario perderá:
+
+  a) El acceso al dashboard y al motor de análisis.
+  b) La capacidad de generar nuevos análisis.
+  c) Cualquier copia o residuo del código del Sistema.
+
+El Usuario se compromete, tras la revocación, a:
+
+  a) NO contratar a terceros para mantener, reactivar o reemplazar
+     el Sistema sobre los componentes del Autor.
+  b) NO conservar, copiar ni transferir los componentes del Autor
+     mencionados en la sección 5.
+  c) Permitir al Autor el acceso necesario al servidor para retirar
+     sus componentes durante un máximo de quince (15) días
+     calendario tras la notificación.
+
+
+7. SOPORTE Y MANTENIMIENTO
+──────────────────────────
+
+Mientras la licencia esté vigente, el Autor proveerá:
+
+  a) Operación, monitoreo y actualizaciones según lo acuerden las
+     partes verbalmente o por mensaje escrito.
+  b) Atención de incidentes según los tiempos descritos en
+     SECURITY.md.
+
+El Autor NO está obligado a:
+
+  a) Garantizar disponibilidad 24/7 sin acuerdo escrito de SLA.
+  b) Implementar funcionalidades nuevas sin acuerdo de alcance y
+     pago adicional.
+  c) Capacitar a personal del Usuario en la administración técnica
+     del Sistema.
+
+
+8. GARANTÍAS Y RESPONSABILIDAD
+──────────────────────────────
+
+EL SISTEMA SE PROVEE "TAL CUAL", SIN GARANTÍA DE NINGÚN TIPO,
+EXPRESA O IMPLÍCITA, INCLUYENDO PERO NO LIMITADO A GARANTÍAS DE
+COMERCIABILIDAD, ADECUACIÓN A UN PROPÓSITO PARTICULAR O NO
+INFRACCIÓN.
+
+EN NINGÚN CASO EL AUTOR SERÁ RESPONSABLE POR DAÑOS DIRECTOS,
+INDIRECTOS, INCIDENTALES, CONSECUENCIALES O PUNITIVOS DERIVADOS DEL
+USO O LA IMPOSIBILIDAD DE USO DEL SISTEMA, INCLUYENDO PERO NO
+LIMITADO A: PÉRDIDA DE DATOS, INTERRUPCIÓN DEL NEGOCIO, BAN DEL
+NÚMERO DE WHATSAPP DEL USUARIO, MULTAS REGULATORIAS POR
+INCUMPLIMIENTO DE LA LEY 1581, O CUALQUIER OTRA PÉRDIDA COMERCIAL.
+
+Las obligaciones del Usuario en materia de protección de datos
+personales (Ley 1581 de 2012) recaen exclusivamente sobre el Usuario
+en su calidad de Responsable del tratamiento. Ver docs/PRIVACIDAD.md.
+
+
+9. CONFIDENCIALIDAD
+───────────────────
+
+Tanto el código fuente como los prompts y el esquema técnico son
+información confidencial del Autor. El Usuario reconoce esta
+confidencialidad incluso después de la revocación de la licencia.
+
+Recíprocamente, el Autor mantiene confidencialidad sobre los datos
+personales y comerciales del Usuario que procesa al operar el
+Sistema, conforme a docs/PRIVACIDAD.md y SECURITY.md.
+
+
+10. JURISDICCIÓN Y LEY APLICABLE
+────────────────────────────────
+
+Esta licencia se rige por las leyes de la República de Colombia.
+Cualquier controversia será resuelta preferentemente mediante
+diálogo directo entre las partes; subsidiariamente, ante los
+juzgados competentes de Bogotá D.C.
+
+
+11. DISPOSICIONES FINALES
+─────────────────────────
+
+  a) Esta licencia constituye el acuerdo completo entre las partes
+     respecto al uso del Sistema. No existen acuerdos verbales ni
+     escritos previos que la complementen, salvo que se incorporen
+     por escrito y con firma de ambas partes.
+  b) Si alguna disposición se considera inválida o inejecutable, las
+     demás conservan plena vigencia.
+  c) La aceptación de esta licencia se materializa con el inicio del
+     uso del Sistema por parte del Usuario.
+
+
+CONTACTO DEL AUTOR
+══════════════════
+
+Para cualquier asunto relacionado con esta licencia
+—revocación, soporte, controversias, autorizaciones especiales—
+contactar a:
+
+    Carlos Manuel Jiménez Méndez
+    WhatsApp: +57 302 439 6752
+    Correo:   carlitos05203rules@gmail.com
+
+
+Bogotá D.C., 2026.
