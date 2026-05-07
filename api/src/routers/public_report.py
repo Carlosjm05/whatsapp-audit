@@ -167,36 +167,79 @@ def public_report(
         "no_alternatives": {"count": int(binarios.get("no_alternatives") or 0), "pct": _pct("no_alternatives")},
     }
 
-    # ── 6. Top errores (categorizados — mismas reglas que /errors) ─
+    # ── 6. Top errores (categorizados — agrupación agresiva) ─────
+    # Estrategia:
+    #   1) Filtrar ruido: líneas que parecen log de chat (con timestamp)
+    #      o que contienen marcadores de conversación. Esos no son errores
+    #      de proceso, son contenido que se coló y filtraría datos del lead.
+    #   2) Categorizar agresivamente: incluimos 'nunca', 'jamás', 'sin',
+    #      variantes de tiempo verbal. Mejor pocos buckets gordos que
+    #      muchos de uno (que son la misma queja).
+    #   3) ELSE → 'Otros'. Sin pasar texto crudo para no leakear nombres
+    #      ni fragmentos del chat al informe público.
     top_errors = fetch_all(
         """
         WITH errores_brutos AS (
-          SELECT lower(err) AS err
+          SELECT lower(trim(err)) AS err
             FROM advisor_scores, LATERAL unnest(COALESCE(errors_list, ARRAY[]::text[])) AS err
-           WHERE err IS NOT NULL AND err <> ''
+           WHERE err IS NOT NULL
+             AND length(trim(err)) > 5
+             -- Excluir líneas que claramente son log de chat, no errores.
+             AND err !~ '^\\[\\d{4}-\\d{2}-\\d{2}'
+             AND err !~* '(lead escrib|asesor escrib|cliente escrib|asesor:|lead:|cliente:|@s\\.whatsapp)'
         ),
         normalizados AS (
           SELECT
             CASE
-              WHEN err ~ '(no.{0,3}propuso.{0,3}visita|sin proponer visita|no.{0,3}intent.{0,3}cerr.{0,5}venta|no.{0,3}intent.{0,3}cerr.{0,5}conversaci)'
-                THEN 'No propuso visita ni intentó cerrar'
-              WHEN err ~ '(no.{0,3}calific|no preguntó.{0,5}(presupuesto|ciudad|propósito|urgencia)|sin calificar.{0,3}lead|nunca preguntó)'
-                THEN 'No calificó al lead (faltó preguntar lo básico)'
-              WHEN err ~ '(mensaj.{0,3}gen[eé]ric|usó.{0,3}plantilla|sin personalizar|copy.?paste)'
-                THEN 'Usó mensajes genéricos / plantilla sin personalizar'
-              WHEN err ~ '(respondi[óo].{0,5}tarde|tard[óo].{0,3}responder|fuera de SLA|>5 ?min|sla.{0,3}5)'
-                THEN 'Respondió tarde (violó SLA 5 min)'
-              WHEN err ~ '(no env[ií]o?.{0,5}info|sin información del proyecto|no.{0,3}compart[ií]o?.{0,5}precio|info incompleta)'
-                THEN 'No envió información del proyecto / precios'
-              WHEN err ~ '(no.{0,3}(seguimiento|follow.?up)|sin seguimiento|dej[óo] colgado|abandon[óo]?.{0,3}lead)'
+              -- No calificó al lead
+              WHEN err ~ '(no.{0,5}calific|nunca.{0,5}calific|jam[áa]s.{0,5}calific|sin calificar|no.{0,5}pregunt[óo].{0,15}(presupuesto|ciudad|prop[óo]sito|urgencia|necesidad|tipo|familia|destino)|nunca pregunt[óo]|falt[óo].{0,10}preguntar|no.{0,10}identific[óo].{0,10}necesidad)'
+                THEN 'No calificó al lead'
+
+              -- Mensajes genéricos / plantilla / impersonal
+              WHEN err ~ '(mensaj.{0,5}gen[eé]ric|us[óo].{0,10}plantilla|sin personalizar|copy.?paste|impersonal|mensaj.{0,5}autom[áa]tic|us[óo].{0,5}mensaj.{0,15}plantilla|us[óo].{0,5}mensaj.{0,15}gen[eé]ric|respuesta.{0,5}gen[eé]ric)'
+                THEN 'Usó mensajes genéricos / plantilla'
+
+              -- No propuso visita
+              WHEN err ~ '(no.{0,5}propuso.{0,15}visita|nunca.{0,5}propuso.{0,15}visita|jam[áa]s.{0,5}propuso.{0,15}visita|sin proponer visita|no.{0,10}propuso.{0,15}(agendar|mostrar|recorrido|conocer))'
+                THEN 'No propuso visita'
+
+              -- No intentó cerrar / sin acción concreta
+              WHEN err ~ '(no.{0,5}intent.{0,5}cerr|nunca.{0,5}intent.{0,5}cerr|jam[áa]s.{0,5}intent.{0,5}cerr|no.{0,5}propuso.{0,15}(acci[óo]n|compromiso|paso)|nunca.{0,5}propuso.{0,15}(acci|compromiso)|no.{0,5}gener[óo].{0,15}compromiso|no.{0,5}propuso.{0,5}ningun)'
+                THEN 'No intentó cerrar / sin acción concreta'
+
+              -- Sin seguimiento / dejó colgado / sin retomar
+              WHEN err ~ '(no.{0,5}(seguimiento|follow.?up)|sin seguimiento|nunca.{0,15}seguimiento|dej[óo].{0,5}colgad|abandon[óo]?.{0,5}lead|dej[óo].{0,10}pasar.{0,15}(meses|tiempo|d[íi]as|semana|hora)|no.{0,5}retom[óo]|nunca.{0,5}volvi[óo].{0,15}contactar)'
                 THEN 'Sin seguimiento / dejó colgado'
-              WHEN err ~ '(prometi[óo].{0,3}consult|no volvi[óo].{0,3}respuesta|no.{0,3}consult[óo].{0,3}vuelta)'
+
+              -- No respondió preguntas del lead
+              WHEN err ~ '(no.{0,5}respond[ií][óo]?.{0,30}pregunta|nunca.{0,5}respond[ií][óo]?.{0,30}pregunta|no.{0,5}contest[óo].{0,15}pregunta|qued[óo].{0,15}pregunta.{0,15}sin|nunca.{0,5}respond[ií][óo]?.{0,30}directamente)'
+                THEN 'No respondió las preguntas del lead'
+
+              -- No envió info del proyecto / precios
+              WHEN err ~ '(no env[ií]o?.{0,15}info|sin informaci[óo]n del proyecto|no.{0,5}compart[ií]o?.{0,15}precio|info incompleta|env[ií][óo]?.{0,15}info.{0,15}destajo|env[ií][óo]?.{0,15}info.{0,15}sin.{0,15}context|no.{0,5}envi[óo].{0,15}precio|no.{0,5}envi[óo].{0,15}brochure)'
+                THEN 'No envió información del proyecto / precios'
+
+              -- SLA velocidad
+              WHEN err ~ '(respondi[óo].{0,15}tarde|tard[óo].{0,5}responder|fuera de sla|>5 ?min|sla.{0,5}5|tiempo.{0,10}respuesta.{0,10}(alto|excesiv|lento)|respuesta.{0,5}lenta)'
+                THEN 'Respondió tarde (violó SLA)'
+
+              -- Prometió consultar y no volvió
+              WHEN err ~ '(prometi[óo].{0,15}consult|no volvi[óo].{0,15}respuesta|no.{0,5}consult[óo].{0,15}vuelta|prometi[óo].{0,15}volver|qued[óo].{0,5}en.{0,5}avisar)'
                 THEN 'Prometió consultar y no volvió'
-              WHEN err ~ '(no.{0,3}(resolvi[óo]|atendi[óo]|respondi[óo]).{0,3}objec)'
-                THEN 'No resolvió objeción del lead'
-              WHEN err ~ '(discovery.{0,3}tard|preguntó.{0,3}presupuesto.{0,5}despu)'
-                THEN 'Discovery tardío (preguntó presupuesto después de info)'
-              ELSE substring(initcap(err) from 1 for 100)
+
+              -- Objeciones no resueltas
+              WHEN err ~ '(no.{0,5}(resolvi[óo]|atendi[óo]|respondi[óo]).{0,15}objec|objec.{0,10}sin.{0,5}resolver|ignor[óo].{0,5}objec|no.{0,5}manej[óo].{0,5}objec)'
+                THEN 'No resolvió la objeción del lead'
+
+              -- Discovery tardío
+              WHEN err ~ '(discovery.{0,5}tard|pregunt[óo].{0,15}presupuesto.{0,15}despu)'
+                THEN 'Discovery tardío'
+
+              -- Audios sin contenido / no transcritos
+              WHEN err ~ '(audio.{0,15}sin.{0,5}conten|audio.{0,15}0.{0,5}segund|audio.{0,15}vac[íi]|nunca.{0,15}transcribi[óo].{0,5}audio|audio.{0,10}no.{0,10}transcrit|usó.{0,5}solo.{0,5}audio)'
+                THEN 'Audios sin contenido / no transcritos'
+
+              ELSE 'Otros (sin clasificar)'
             END AS error_text
           FROM errores_brutos
         )
@@ -204,7 +247,6 @@ def public_report(
           FROM normalizados
          GROUP BY error_text
          ORDER BY count DESC
-         LIMIT 30
         """
     )
 
@@ -292,6 +334,8 @@ def public_report(
     # ── 12. Lista textual de errores (anónima, todo lo medible) ─
     # Sin advisor_name, sin lead_id ni teléfono. Solo el texto y la
     # fecha de creación del scoring para poder ordenarlos.
+    # Mismo filtro de ruido que en el top: sin líneas de chat-log y sin
+    # marcadores de conversación (que pueden contener el nombre del lead).
     raw_errors = []
     if raw_limit > 0:
         raw_errors = fetch_all(
@@ -300,7 +344,10 @@ def public_report(
                    to_char(asc_.created_at, 'YYYY-MM-DD') AS date
               FROM advisor_scores asc_,
                    LATERAL unnest(COALESCE(errors_list, ARRAY[]::text[])) AS err
-             WHERE err IS NOT NULL AND err <> ''
+             WHERE err IS NOT NULL
+               AND length(trim(err)) > 5
+               AND err !~ '^\\[\\d{4}-\\d{2}-\\d{2}'
+               AND err !~* '(lead escrib|asesor escrib|cliente escrib|asesor:|lead:|cliente:|@s\\.whatsapp)'
              ORDER BY asc_.created_at DESC
              LIMIT %s
             """,

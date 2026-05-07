@@ -443,17 +443,17 @@ export default function ReportePublicoPage() {
 
           <ChartCard
             title="Errores más frecuentes"
-            subtitle="Categorías agrupadas (variantes textuales unificadas) — top 30"
-            height={520}
+            subtitle="Categorías agrupadas (variantes textuales unificadas)"
+            height={420}
           >
             {data.top_errors.length > 0 ? (
               <ChartBar
-                data={data.top_errors.slice(0, 30)}
+                data={data.top_errors.slice(0, 12)}
                 xKey="error_text"
                 yKey="count"
                 color="#ef4444"
                 horizontal
-                yAxisWidth={280}
+                yAxisWidth={260}
               />
             ) : (
               <div className="flex items-center justify-center h-40 text-xs text-slate-400">
@@ -462,6 +462,71 @@ export default function ReportePublicoPage() {
             )}
           </ChartCard>
         </section>
+
+        {/* ── Tabla detallada de categorías de errores ───────── */}
+        {data.top_errors.length > 0 && (
+          <section>
+            <h2 className="text-lg font-semibold text-slate-800 mb-3 flex items-center gap-2">
+              <ListChecks className="w-5 h-5 text-rose-500" />
+              Detalle por categoría
+            </h2>
+            <div className="card p-4 sm:p-5">
+              <p className="text-xs text-slate-500 mb-4">
+                Distribución de los {formatNumber(
+                  data.top_errors.reduce((acc, e) => acc + (e.count || 0), 0),
+                )}{' '}
+                errores detectados, agrupados por tipo. La barra muestra el peso
+                relativo de cada categoría.
+              </p>
+              <div className="space-y-3">
+                {(() => {
+                  const total = data.top_errors.reduce(
+                    (acc, e) => acc + (e.count || 0),
+                    0,
+                  );
+                  const max = data.top_errors[0]?.count || 1;
+                  return data.top_errors.map((e) => {
+                    const pctOfTotal = total > 0 ? (e.count / total) * 100 : 0;
+                    const widthPct = max > 0 ? (e.count / max) * 100 : 0;
+                    const isOther = e.error_text === 'Otros (sin clasificar)';
+                    const tone = isOther
+                      ? 'bg-slate-400'
+                      : pctOfTotal >= 20
+                      ? 'bg-rose-500'
+                      : pctOfTotal >= 10
+                      ? 'bg-orange-500'
+                      : 'bg-amber-500';
+                    return (
+                      <div key={e.error_text}>
+                        <div className="flex items-center justify-between text-sm mb-1 gap-3">
+                          <span
+                            className={`flex-1 min-w-0 ${
+                              isOther ? 'text-slate-500 italic' : 'text-slate-700'
+                            }`}
+                          >
+                            {e.error_text}
+                          </span>
+                          <span className="text-slate-700 font-medium tabular-nums whitespace-nowrap">
+                            {formatNumber(e.count)}
+                            <span className="text-slate-400 text-xs ml-1.5">
+                              ({pctOfTotal.toFixed(1)}%)
+                            </span>
+                          </span>
+                        </div>
+                        <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full ${tone} rounded-full transition-all`}
+                            style={{ width: `${Math.max(2, widthPct)}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* ── PROCESOS QUE MÁS SE ROMPEN ─────────────────────── */}
         <section>
