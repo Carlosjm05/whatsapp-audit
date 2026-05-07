@@ -32,6 +32,9 @@ class Settings:
         # Misc
         self.log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
         self.domain: str = os.getenv("DOMAIN", "")
+        # Token del informe público (`/reporte?k=...`). Si está vacío,
+        # el endpoint público responde 404 — efectivamente desactivado.
+        self.public_report_token: str = os.getenv("PUBLIC_REPORT_TOKEN", "")
         # Origenes extra separados por coma (ej. dashboard staging).
         extra = os.getenv("CORS_EXTRA_ORIGINS", "")
         self._extra_origins = [o.strip() for o in extra.split(",") if o.strip()]

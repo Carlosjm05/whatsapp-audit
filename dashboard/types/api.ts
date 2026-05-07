@@ -2,6 +2,29 @@ export interface LoginResponse {
   access_token: string;
   token_type: string;
   expires_in: number;
+  user?: {
+    username: string;
+    role: string;
+  };
+}
+
+// ─── TOKENS DEL INFORME PÚBLICO (admin) ──────────────────────
+export interface ShareTokenInfo {
+  id: string;
+  label: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  use_count: number;
+  is_active: boolean;
+  fingerprint: string;
+}
+
+export interface ShareTokenCreateResponse extends ShareTokenInfo {
+  token: string;
+  url_path: string;
 }
 
 // ─── GHOST LEADS (leads fantasma recuperables) ───────────────

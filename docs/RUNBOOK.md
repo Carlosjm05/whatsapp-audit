@@ -353,6 +353,83 @@ ssh root@<droplet> "cd /opt/whatsapp-audit && docker compose up -d --force-recre
 
 ---
 
+## Compartir el informe público con el cliente
+
+El panel `/reporte` es una página **sin login** que muestra el
+diagnóstico de errores de forma agregada y anónima — nunca expone
+nombres de asesores, teléfonos ni IDs de leads. Pensada para que
+Oscar la abra en reuniones con su equipo y pueda mostrar números
+sin señalar personas.
+
+### Generar un enlace (modo recomendado)
+
+Desde el dashboard, con un usuario rol `admin`:
+
+1. Ir a **Sistema → Enlaces compartibles** en el sidebar (ruta `/enlaces`).
+2. Clic en **Generar nuevo enlace**.
+3. Poner una etiqueta (ej. "Para Oscar — reunión junio") y, si querés,
+   una caducidad en días (ej. 60). Vacío = nunca caduca.
+4. Clic en **Generar**. Se abre un modal con la URL completa.
+5. **Copiá la URL ahora** — solo se muestra esta vez. Se la mandás a
+   Oscar por WhatsApp.
+
+La página recuerda quién creó cada enlace, cuándo, cuántas veces se
+usó y cuándo se vio por última vez. Podés revocarlo en cualquier
+momento desde la misma lista.
+
+> **Nota:** los tokens se guardan **hasheados** en DB. Si el dump de
+> Postgres se filtrara, los enlaces no son utilizables. La única
+> oportunidad de leer el plaintext es ese modal de "se acaba de
+> crear".
+
+### Cómo se invalida un enlace
+
+- **Revocar:** botón en la lista. Queda en el histórico con
+  `revoked_at` seteado, deja de funcionar al instante.
+- **Eliminar:** borra la fila. Útil para limpiar pruebas. Pierde la
+  trazabilidad.
+- **Caducidad:** si creaste el enlace con días de caducidad, el
+  sistema lo expira solo. Se sigue viendo en la lista como "Expirado".
+
+### Modo legacy (variable de entorno)
+
+Sigue funcionando para compatibilidad con setups viejos:
+
+```
+PUBLIC_REPORT_TOKEN=<openssl rand -hex 32>
+```
+
+en el `.env` del servidor + `docker compose up -d --no-deps api`. El
+endpoint público acepta tokens de DB **o** del env. Si tenés ya el
+panel `/enlaces` operativo, usá ese — es más cómodo y deja
+auditoría.
+
+### Qué incluye el informe
+
+- Resumen general (leads analizados, periodo, score promedio).
+- KPIs de tiempo de respuesta (mediana, promedio, p95, sin respuesta efectiva).
+- Distribución por categoría (excelente / bueno / regular / malo / crítico).
+- SLA de velocidad y de seguimiento (% cumplido).
+- Pasos del proceso que más se rompen (% sin seguimiento, mensajes
+  genéricos, no propuso visita, no calificó, etc.).
+- Top 30 de errores categorizados (gráfico).
+- Causas granulares de pérdida (`perdido_por`).
+- Estados finales (venta cerrada, ghosteado, etc.).
+- Objeciones (totales, resueltas, ocultas, por tipo).
+- Preguntas del lead que nunca se respondieron (top 20).
+- Evolución mensual (errores, score, p50 de respuesta, conversiones).
+- Actividad de domingo (separada del SLA).
+- Lista textual de hasta 5.000 errores con fecha (filtro por palabra).
+- Fortalezas detectadas (para balance).
+
+### Si se sospecha que un link se filtró
+
+Entrar a `/enlaces`, clic en **Revocar** sobre la fila correspondiente
+y generar uno nuevo. El link viejo deja de funcionar inmediatamente
+(la query del endpoint público filtra por `revoked_at IS NULL`).
+
+---
+
 ## Apagar el sistema temporalmente
 
 ```bash

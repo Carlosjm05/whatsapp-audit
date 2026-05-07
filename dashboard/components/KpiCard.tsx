@@ -1,4 +1,5 @@
 import { ReactNode } from 'react';
+import InfoTooltip from './InfoTooltip';
 
 interface Props {
   label: string;
@@ -6,6 +7,9 @@ interface Props {
   sub?: ReactNode;
   icon?: ReactNode;
   tone?: 'default' | 'positive' | 'warning' | 'danger';
+  /** Si se pasa, muestra un (?) al lado del label que abre un popover
+   *  con la explicación de cómo se calcula el KPI. */
+  tooltip?: string;
 }
 
 // Mapping deliberado a clases completas para que Tailwind JIT las detecte.
@@ -31,13 +35,19 @@ const TONE_VALUE: Record<NonNullable<Props['tone']>, string> = {
   danger:   'text-rose-700',
 };
 
-export default function KpiCard({ label, value, sub, icon, tone = 'default' }: Props) {
+export default function KpiCard({ label, value, sub, icon, tone = 'default', tooltip }: Props) {
   return (
     <div className={`bg-white rounded-xl shadow-card p-3 sm:p-5 ring-1 ${TONE_RING[tone]} transition hover:shadow-md`}>
       <div className="flex items-start justify-between gap-2 sm:gap-3">
         <div className="min-w-0 flex-1">
-          <div className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider leading-tight">
-            {label}
+          <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider leading-tight">
+            <span className="min-w-0">{label}</span>
+            {tooltip && (
+              <InfoTooltip
+                text={tooltip}
+                ariaLabel={`Cómo se calcula: ${label}`}
+              />
+            )}
           </div>
           <div className={`mt-1.5 sm:mt-2 text-xl sm:text-3xl font-bold leading-tight ${TONE_VALUE[tone]} break-words`}>
             {value}
