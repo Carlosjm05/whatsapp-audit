@@ -354,16 +354,77 @@ def public_report(
             [raw_limit],
         )
 
-    # ── 13. Fortalezas (para balance — opcional pero útil) ──────
+    # ── 13. Fortalezas (categorizadas para evitar leak de nombres) ──
+    # Mismo enfoque que top_errors: agrupación agresiva en buckets
+    # claros + ELSE 'Otros'. NO mostramos texto crudo porque las
+    # entradas suelen contener nombres propios ("se identificó como
+    # Ronald") que no deben aparecer en el informe público.
     top_strengths = fetch_all(
         """
-        SELECT initcap(lower(s)) AS strength, COUNT(*)::int AS count
-          FROM advisor_scores,
-               LATERAL unnest(COALESCE(strengths_list, ARRAY[]::text[])) AS s
-         WHERE s IS NOT NULL AND s <> ''
-         GROUP BY 1
+        WITH fortalezas_brutas AS (
+          SELECT lower(trim(s)) AS s
+            FROM advisor_scores,
+                 LATERAL unnest(COALESCE(strengths_list, ARRAY[]::text[])) AS s
+           WHERE s IS NOT NULL
+             AND length(trim(s)) > 5
+             AND s !~ '^\\[\\d{4}-\\d{2}-\\d{2}'
+             AND s !~* '(lead escrib|asesor escrib|cliente escrib|asesor:|lead:|cliente:|@s\\.whatsapp)'
+        ),
+        normalizadas AS (
+          SELECT
+            CASE
+              -- Saludo / identificación correcta
+              WHEN s ~ '(se.{0,5}identific[óo]|se.{0,5}present[óo]|salud[óo].{0,15}correctamente|dijo.{0,5}su.{0,5}nombre|nombr[óo].{0,5}al.{0,5}inicio|present[óo].{0,5}al.{0,5}inicio|us[óo].{0,5}su.{0,5}nombre|firm[óo].{0,5}correctamente|salud[óo].{0,5}al.{0,5}inicio)'
+                THEN 'Se identificó correctamente al inicio'
+
+              -- Respondió rápido
+              WHEN s ~ '(respondi[óo].{0,15}r[áa]pid|respondi[óo].{0,15}inmediat|respondi[óo].{0,15}primer.{0,5}mensaj|respondi[óo].{0,15}menos.{0,5}de|sla.{0,15}cumpl|cumpl[ií][óo].{0,5}sla|respuesta.{0,15}r[áa]pida|respuesta.{0,15}inmediat|tiempo.{0,5}respuesta.{0,5}bajo|primera.{0,5}respuesta.{0,5}r[áa]pida)'
+                THEN 'Respondió rápido al primer contacto'
+
+              -- Seguimiento sostenido
+              WHEN s ~ '(mantuvo.{0,15}(seguimiento|contacto)|hizo.{0,15}seguimiento|seguimiento.{0,15}(largo.{0,3}plazo|consistente|sostenido)|seguimiento.{0,15}(durante|por).{0,15}(meses|semanas|d[íi]as)|persisti[óo].{0,15}(en|con).{0,5}(seguimiento|contacto|lead)|no.{0,5}abandon[óo].{0,5}lead|sigui[óo].{0,15}contactando|retom[óo].{0,5}contacto)'
+                THEN 'Mantuvo seguimiento a largo plazo'
+
+              -- Calificó al lead
+              WHEN s ~ '(calific[óo].{0,5}al.{0,5}lead|calific[óo].{0,5}correct|pregunt[óo].{0,15}(presupuesto|ciudad|prop[óo]sito|urgencia|necesidad|tipo|familia|destino)|identific[óo].{0,15}necesidad|hizo.{0,5}discovery|discovery.{0,15}correct|profundiz[óo].{0,5}en.{0,5}necesidad)'
+                THEN 'Calificó bien al lead'
+
+              -- Respondió todas las preguntas
+              WHEN s ~ '(respondi[óo].{0,15}(todas.{0,5})?(las.{0,5})?preguntas|contest[óo].{0,5}(todas.{0,5})?(las.{0,5})?preguntas|respondi[óo].{0,15}dudas|aclar[óo].{0,5}(todas.{0,5})?dudas|respondi[óo].{0,15}t[ée]cnic|info.{0,5}t[ée]cnica.{0,5}completa|respondi[óo].{0,15}completamente|atendi[óo].{0,15}dudas)'
+                THEN 'Respondió completamente las preguntas'
+
+              -- Tono cordial / profesional
+              WHEN s ~ '(tono.{0,15}(cordial|amable|profesional|c[áa]lido|emp[áa]tico|cercano)|amabilidad|cordialidad|trato.{0,15}(amable|cordial|profesional)|emp[áa]t[íi]a|cercan[íi]a|fue.{0,5}(amable|cordial|profesional|atento)|comunicaci[óo]n.{0,5}clara)'
+                THEN 'Tono cordial y profesional'
+
+              -- Compartió info del proyecto
+              WHEN s ~ '(envi[óo].{0,15}info|envi[óo].{0,15}precio|envi[óo].{0,15}brochure|envi[óo].{0,15}especificaciones|envi[óo].{0,15}detalles|envi[óo].{0,15}fotos|compart[ií][óo].{0,15}info|envi[óo].{0,15}material|envi[óo].{0,15}cat[áa]logo|info.{0,15}completa.{0,15}del.{0,5}proyecto|envi[óo].{0,15}render|envi[óo].{0,15}plano)'
+                THEN 'Compartió información del proyecto'
+
+              -- Ofreció alternativas
+              WHEN s ~ '(ofreci[óo].{0,15}(alternativ|opcion|m[úu]ltiples|otras.{0,5}opciones|otros.{0,5})|ofreci[óo].{0,15}variedad|m[úu]ltiples.{0,15}(alternativ|opciones|productos)|sugiri[óo].{0,15}(alternativ|opcion))'
+                THEN 'Ofreció alternativas y opciones'
+
+              -- Manejó objeciones
+              WHEN s ~ '(resolvi[óo].{0,15}objec|atendi[óo].{0,15}objec|manej[óo].{0,15}objec|respondi[óo].{0,15}objec|super[óo].{0,15}objec|aclar[óo].{0,15}objec|objec.{0,15}resuelt)'
+                THEN 'Manejó bien las objeciones'
+
+              -- Propuso visita / intentó cerrar
+              WHEN s ~ '(propuso.{0,15}visita|intent[óo].{0,15}(cerrar|cerrar.{0,5}venta|cierre)|gener[óo].{0,15}compromiso|propuso.{0,15}(acci[óo]n|paso|reuni[óo]n|cita)|invit[óo].{0,15}visit|agend[óo].{0,15}(visita|reuni[óo]n|cita))'
+                THEN 'Propuso visita / intentó cerrar'
+
+              -- Personalizó el mensaje
+              WHEN s ~ '(personaliz[óo].{0,15}mensaj|mensaj.{0,15}personalizad|adapt[óo].{0,15}mensaj|adapt[óo].{0,15}al.{0,5}lead|context.{0,15}al.{0,5}lead|no.{0,5}us[óo].{0,5}plantilla|hizo.{0,5}referencia.{0,5}al)'
+                THEN 'Personalizó el mensaje al lead'
+
+              ELSE 'Otros (sin clasificar)'
+            END AS strength
+          FROM fortalezas_brutas
+        )
+        SELECT strength, COUNT(*)::int AS count
+          FROM normalizadas
+         GROUP BY strength
          ORDER BY count DESC
-         LIMIT 15
         """
     )
 
