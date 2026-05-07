@@ -806,20 +806,79 @@ export default function ReportePublicoPage() {
               <Award className="w-5 h-5 text-emerald-500" />
               Lo que el equipo está haciendo bien
             </h2>
-            <ChartCard
-              title="Fortalezas más frecuentes"
-              subtitle="Detectadas por el análisis automático"
-              height={360}
-            >
-              <ChartBar
-                data={data.top_strengths}
-                xKey="strength"
-                yKey="count"
-                color="#10b981"
-                horizontal
-                yAxisWidth={260}
-              />
-            </ChartCard>
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+              <div className="lg:col-span-3">
+                <ChartCard
+                  title="Fortalezas más frecuentes"
+                  subtitle="Categorías agrupadas (variantes textuales unificadas)"
+                  height={380}
+                >
+                  <ChartBar
+                    data={data.top_strengths.slice(0, 12)}
+                    xKey="strength"
+                    yKey="count"
+                    color="#10b981"
+                    horizontal
+                    yAxisWidth={240}
+                  />
+                </ChartCard>
+              </div>
+              <div className="lg:col-span-2">
+                <div className="card p-4 sm:p-5 h-full">
+                  <h3 className="text-sm font-semibold text-slate-800 mb-1">
+                    Detalle por categoría
+                  </h3>
+                  <p className="text-xs text-slate-500 mb-4">
+                    Distribución de las{' '}
+                    {formatNumber(
+                      data.top_strengths.reduce((a, e) => a + (e.count || 0), 0),
+                    )}{' '}
+                    fortalezas detectadas.
+                  </p>
+                  <div className="space-y-3">
+                    {(() => {
+                      const total = data.top_strengths.reduce(
+                        (a, e) => a + (e.count || 0),
+                        0,
+                      );
+                      const max = data.top_strengths[0]?.count || 1;
+                      return data.top_strengths.map((s) => {
+                        const pctOfTotal = total > 0 ? (s.count / total) * 100 : 0;
+                        const widthPct = max > 0 ? (s.count / max) * 100 : 0;
+                        const isOther = s.strength === 'Otros (sin clasificar)';
+                        return (
+                          <div key={s.strength}>
+                            <div className="flex items-center justify-between text-sm mb-1 gap-3">
+                              <span
+                                className={`flex-1 min-w-0 ${
+                                  isOther ? 'text-slate-500 italic' : 'text-slate-700'
+                                }`}
+                              >
+                                {s.strength}
+                              </span>
+                              <span className="text-slate-700 font-medium tabular-nums whitespace-nowrap">
+                                {formatNumber(s.count)}
+                                <span className="text-slate-400 text-xs ml-1.5">
+                                  ({pctOfTotal.toFixed(1)}%)
+                                </span>
+                              </span>
+                            </div>
+                            <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full transition-all ${
+                                  isOther ? 'bg-slate-400' : 'bg-emerald-500'
+                                }`}
+                                style={{ width: `${Math.max(2, widthPct)}%` }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              </div>
+            </div>
           </section>
         )}
 
