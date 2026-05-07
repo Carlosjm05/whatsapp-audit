@@ -76,7 +76,7 @@ export default function EnlacesPage() {
       if (err instanceof ApiError && err.status === 403) {
         // El JWT del .env tiene rol 'admin' por default; un viewer
         // que llegue acá ve este mensaje.
-        setError('No tenés permiso para gestionar enlaces. Necesitás rol de administrador.');
+        setError('No tienes permiso para gestionar enlaces. Necesitas rol de administrador.');
       } else {
         setError(err instanceof Error ? err.message : 'Error al cargar tokens');
       }
@@ -134,7 +134,7 @@ export default function EnlacesPage() {
   async function onDelete(t: ShareTokenInfo) {
     if (
       !confirm(
-        `¿Eliminar definitivamente "${t.label}"? Se pierde el rastro de auditoría. Para deshabilitar conservando el historial usá "Revocar".`,
+        `¿Eliminar definitivamente "${t.label}"? Se pierde el rastro de auditoría. Para deshabilitar conservando el historial usa "Revocar".`,
       )
     )
       return;
@@ -148,12 +148,48 @@ export default function EnlacesPage() {
   }
 
   async function copyToClipboard(text: string, onCopy?: () => void) {
+    // En sitios HTTP (sin TLS) la API moderna `navigator.clipboard` está
+    // bloqueada por el navegador — el panel se sirve por IP sin SSL, así
+    // que necesitamos un fallback con el API legacy.
+    let ok = false;
     try {
-      await navigator.clipboard.writeText(text);
+      if (
+        typeof navigator !== 'undefined' &&
+        navigator.clipboard &&
+        typeof window !== 'undefined' &&
+        window.isSecureContext
+      ) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      // Fallback: textarea oculto + execCommand('copy'). Funciona en HTTP.
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '0';
+        ta.style.left = '0';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {
+        ok = false;
+      }
+    }
+    if (ok) {
       toast.success('Copiado al portapapeles');
       onCopy?.();
-    } catch {
-      toast.error('No se pudo copiar — copialo manualmente');
+    } else {
+      toast.error('No se pudo copiar. Selecciona el texto manualmente.');
     }
   }
 
@@ -165,7 +201,7 @@ export default function EnlacesPage() {
     <div>
       <PageHeader
         title="Enlaces compartibles"
-        subtitle="Gestioná los links del informe público (`/reporte`) que se comparten con el cliente. Sin login, solo lectura, datos agregados y anónimos."
+        subtitle="Gestiona los links del informe público (`/reporte`) que se comparten con el cliente. Sin login, solo lectura, datos agregados y anónimos."
       />
 
       <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
@@ -174,7 +210,7 @@ export default function EnlacesPage() {
           <div>
             Los tokens se guardan <strong>hasheados</strong>. El enlace
             completo solo se muestra una vez, en el momento de generarlo.
-            Si lo perdés tenés que generar otro y revocar el anterior.
+            Si lo pierdes tienes que generar otro y revocar el anterior.
           </div>
         </div>
         <button
@@ -201,7 +237,7 @@ export default function EnlacesPage() {
                 Todavía no hay enlaces generados.
               </p>
               <p className="text-xs text-slate-500 mt-1">
-                Hacé clic en <strong>Generar nuevo enlace</strong> para crear el primero.
+                Haz clic en <strong>Generar nuevo enlace</strong> para crear el primero.
               </p>
             </div>
           ) : (
@@ -329,7 +365,7 @@ export default function EnlacesPage() {
                   className="w-full text-sm border border-slate-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-200"
                 />
                 <p className="text-xs text-slate-500 mt-1">
-                  Recomendado: 30–90 días. Podés revocarlo antes en cualquier momento.
+                  Recomendado: 30–90 días. Puedes revocarlo antes en cualquier momento.
                 </p>
               </div>
 
@@ -370,15 +406,15 @@ export default function EnlacesPage() {
               <h2 className="text-lg font-semibold">Enlace generado</h2>
             </div>
             <p className="text-sm text-slate-600 mb-4">
-              Esta es la <strong>única vez</strong> que vas a ver la URL completa.
-              Copiala ahora y mandásela al cliente.
+              Esta es la <strong>única vez</strong> que verás la URL completa.
+              Cópiala ahora y envíala al cliente.
             </p>
 
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 mb-4 flex items-start gap-2 text-xs text-amber-900">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
               <div>
-                Si la cerrás sin copiarla, el enlace queda activo pero no podés
-                recuperarla. En ese caso revocá este token y generá otro.
+                Si cierras sin copiarla, el enlace queda activo pero no podrás
+                recuperarla. En ese caso revoca este token y genera otro.
               </div>
             </div>
 
@@ -432,8 +468,8 @@ export default function EnlacesPage() {
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 flex items-start gap-2">
                 <Clock className="w-4 h-4 shrink-0 mt-0.5 text-slate-400" />
                 <div>
-                  Tip: probá el enlace vos primero abriéndolo en otra pestaña antes
-                  de mandárselo al cliente. Si carga el informe, está todo bien.
+                  Tip: prueba el enlace tú primero abriéndolo en otra pestaña antes
+                  de enviárselo al cliente. Si carga el informe, está todo bien.
                 </div>
               </div>
             </div>
